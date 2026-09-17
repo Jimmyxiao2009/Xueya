@@ -5,6 +5,7 @@ import {
   type AdaptationEvent,
   type Lesson,
   type QuizQuestion,
+  type LearningEvaluation,
   type QuizResult,
 } from "@/api";
 
@@ -41,6 +42,9 @@ interface LearningState {
   planExpanded: boolean;
   planPulse: number;
   lastAdaptation: AdaptationEvent | null;
+  /** The model's verdict on a free-text answer, once it has been asked for. */
+  evaluation: LearningEvaluation | null;
+  reviewing: boolean;
 
   start: (nodeId: string) => Promise<boolean>;
   reset: () => void;
@@ -51,6 +55,7 @@ interface LearningState {
   submit: () => Promise<void>;
   advance: () => void;
   send: (text: string) => Promise<void>;
+  review: () => Promise<void>;
   finish: () => Promise<void>;
 }
 
@@ -111,6 +116,8 @@ export const useLearningStore = create<LearningState>((set, get) => ({
   planExpanded: true,
   planPulse: 0,
   lastAdaptation: null,
+  evaluation: null,
+  reviewing: false,
 
   start: async (nodeId) => {
     set({
@@ -126,6 +133,8 @@ export const useLearningStore = create<LearningState>((set, get) => ({
       planExpanded: true,
       planPulse: 0,
       lastAdaptation: null,
+      evaluation: null,
+      reviewing: false,
     });
     try {
       const started = await api.learningStart({ nodeId });
@@ -156,6 +165,8 @@ export const useLearningStore = create<LearningState>((set, get) => ({
       planExpanded: true,
       planPulse: 0,
       lastAdaptation: null,
+      evaluation: null,
+      reviewing: false,
     }),
 
   togglePlan: () => set((state) => ({ planExpanded: !state.planExpanded })),
@@ -254,6 +265,8 @@ export const useLearningStore = create<LearningState>((set, get) => ({
       complete,
       messages,
       draft: emptyDraft,
+      evaluation: null,
+      reviewing: false,
       planPulse: state.planPulse + 1,
     });
   },
@@ -299,6 +312,48 @@ export const useLearningStore = create<LearningState>((set, get) => ({
             role: "assistant",
             kind: "text",
             text: `没能连上模型：${errorOf(error).message}`,
+          },
+        ],
+      }));
+    }
+  },
+
+  /**
+   * Ask the model to grade a free-text answer. Objective answers are already
+   * graded in Rust; this is the door for the ones string matching cannot judge.
+   */
+  review: async () => {
+    const state = get();
+    const sessionId = state.sessionId;
+    const answer = state.draft.text.trim();
+    if (!sessionId || !answer || state.reviewing || state.evaluation) return;
+    set({ reviewing: true });
+    try {
+      const evaluation = await api.learningRespond({ sessionId, answer });
+      set((current) => ({
+        reviewing: false,
+        evaluation,
+        messages: [
+          ...current.messages,
+          {
+            id: nextId(),
+            role: "assistant",
+            kind: "text",
+            text: evaluation.feedback,
+            note: `模型评阅 · 正确度 ${Math.round(evaluation.correctness * 100)}%`,
+          },
+        ],
+      }));
+    } catch (error) {
+      set((current) => ({
+        reviewing: false,
+        messages: [
+          ...current.messages,
+          {
+            id: nextId(),
+            role: "assistant",
+            kind: "text",
+            text: `没能完成评阅：${errorOf(error).message}`,
           },
         ],
       }));

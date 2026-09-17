@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import type { QuizQuestion, QuizResult } from "@/api";
+import type { LearningEvaluation, QuizQuestion, QuizResult } from "@/api";
 import { Icon } from "@/components/ui/Icon";
 import type { QuizDraft } from "@/stores/learningStore";
 
@@ -22,11 +22,15 @@ const KIND_HINT: Record<string, string> = {
 export interface QuizCardProps {
   question: QuizQuestion;
   draft: QuizDraft;
+  /** Set once the learner has asked the model to grade a free-text answer. */
+  evaluation: LearningEvaluation | null;
+  reviewing: boolean;
   onSelect: (option: string) => void;
   onText: (text: string) => void;
   onPhoto: (dataUrl: string | null) => void;
   onSubmit: () => void;
   onAdvance: () => void;
+  onReview: () => void;
   /** Wrong answers are retried, so the card keeps its shake animation state. */
   phase: "idle" | "correct" | "retry" | "pending";
 }
@@ -39,11 +43,14 @@ export interface QuizCardProps {
 export function QuizCard({
   question,
   draft,
+  evaluation,
+  reviewing,
   onSelect,
   onText,
   onPhoto,
   onSubmit,
   onAdvance,
+  onReview,
   phase,
 }: QuizCardProps) {
   const fileInput = useRef<HTMLInputElement>(null);
@@ -145,6 +152,26 @@ export function QuizCard({
               <span className="feedback-detail">
                 这次作答已经记录，回到路线后可以继续下一站。
               </span>
+            ) : null}
+            {question.kind === "short" ? (
+              evaluation ? (
+                <span className="feedback-detail">
+                  已评阅 · 正确度 {Math.round(evaluation.correctness * 100)}%
+                  {evaluation.misconceptions.length
+                    ? ` · 需要留意：${evaluation.misconceptions.join("；")}`
+                    : ""}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="mt-2 block text-xs text-accent"
+                  onClick={onReview}
+                  disabled={reviewing}
+                  data-motion="menu"
+                >
+                  {reviewing ? "正在评阅这段作答…" : "让 Orbit 评阅这段作答"}
+                </button>
+              )
             ) : null}
             {result.misconceptions.length && !result.correct ? (
               <span className="feedback-detail">

@@ -5,7 +5,9 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use uuid::Uuid;
 use verruckt_lib::bootstrap;
-use verruckt_lib::db::repo::{courses as course_repo, learning_loop as loop_repo};
+use verruckt_lib::db::repo::{
+    courses as course_repo, learning as learning_repo, learning_loop as loop_repo,
+};
 use verruckt_lib::domain::{CourseNodeStatus, NodeKind, QuizKind};
 use verruckt_lib::secrets::keyring_store::InMemorySecretStore;
 use verruckt_lib::services::course_service::{CourseService, RouteRequest};
@@ -221,6 +223,43 @@ async fn a_wrong_answer_updates_the_learner_model_and_inserts_practice() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn a_free_text_answer_is_gradable_before_any_source_is_imported() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "射影几何").await;
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+    let node = nodes[0].clone();
+
+    // A route planned from nothing has no evidence chunks yet. Grading must
+    // still work: the lesson's own explanation is enough to judge an answer.
+    let started = LearningService::new(&state)
+        .start(node.id, None)
+        .await
+        .expect("session");
+    let response = LearningService::new(&state)
+        .respond(
+            started.session.id,
+            "因为方向相同，它们交在同一个无穷远点上",
+            None,
+        )
+        .await
+        .expect("evaluation");
+
+    assert!(response.evaluation.correctness >= 0.0);
+    assert!(response.evaluation.correctness <= 1.0);
+    assert!(!response.evaluation.feedback.trim().is_empty());
+    assert_eq!(response.attempts, 1);
+
+    // The attempt is persisted, and it moves the learner model.
+    let attempts = learning_repo::list_attempts_for_node(&state.pool, node.id)
+        .await
+        .expect("attempts");
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].session_id, started.session.id);
 }
 
 #[tokio::test]

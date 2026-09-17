@@ -98,13 +98,14 @@ impl<'a> LearningService<'a> {
             })
             .ok_or_else(|| AppError::NotFound("lesson content for session is missing".into()))?;
 
+        // Evidence sharpens the grade but is not required: a lesson's own
+        // explanation is enough to judge a free-text answer, and a brand new
+        // route may legitimately have no imported sources yet.
         let knowledge = KnowledgeService::new(self.state);
-        let evidence = knowledge.evidence_for_node(&node, 12).await?;
-        if evidence.is_empty() {
-            return Err(AppError::InvalidInput(
-                "no evidence chunks are available for evaluation".into(),
-            ));
-        }
+        let evidence = knowledge
+            .evidence_for_node(&node, 12)
+            .await
+            .unwrap_or_default();
         let snippets = KnowledgeService::evidence_snippets(&evidence);
         let mastery_state = learning_repo::get_mastery(&self.state.pool, node.id).await?;
 

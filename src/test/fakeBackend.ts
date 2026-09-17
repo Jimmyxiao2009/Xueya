@@ -438,6 +438,17 @@ export class FakeBackend {
           insertedNodeId: adaptation ? "inserted" : null,
         };
       }
+      case "learning_respond":
+        return {
+          feedback: "你抓住了方向对应的直觉，但还没有说清它为什么必然是「一个」点。",
+          correctness: 0.62,
+          misconceptions: ["把无穷远点当成了普通点"],
+          masteryDelta: 0.08,
+          followUpQuestion: null,
+          suggestedAction: "continue",
+          mastery: 0.42,
+          attempts: 1,
+        };
       case "tutor_send": {
         const session = this.sessions.get(String(input.sessionId));
         const node = session ? this.findNode(session.nodeId) : undefined;

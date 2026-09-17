@@ -248,6 +248,50 @@ describe("learning loop", () => {
     const submit = screen.getByText("提交答案").closest("button") as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
   });
+
+  it("asks the model to grade a free-text answer and shows the verdict", async () => {
+    mountApp();
+    await enterLearning();
+
+    // Walk the locally gradable questions so the short answer comes up.
+    await clickAsync(screen.getByText("无穷远点的正确说法"));
+    await clickAsync(screen.getByText("提交答案"));
+    await waitFor(() => expect(document.querySelector(".feedback")).toBeTruthy());
+    await clickAsync(screen.getByText("继续学习"));
+
+    await clickAsync(screen.getByText("无穷远点的正确说法"));
+    await clickAsync(screen.getByText("无穷远点与它自身一致"));
+    await clickAsync(screen.getByText("提交答案"));
+    await waitFor(() => expect(document.querySelector(".feedback")?.textContent).toContain("答对了"));
+    await clickAsync(screen.getByText("继续学习"));
+
+    const fill = document.querySelector("#written-answer") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(fill, { target: { value: "无穷远点" } });
+    });
+    await clickAsync(screen.getByText("提交答案"));
+    await waitFor(() => expect(document.querySelector(".feedback")?.textContent).toContain("答对了"));
+    await clickAsync(screen.getByText("继续学习"));
+
+    const textarea = document.querySelector("#written-answer") as HTMLTextAreaElement;
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: "因为方向相同就对应同一个无穷远点" } });
+    });
+    await clickAsync(screen.getByText("提交答案"));
+    await waitFor(() => expect(document.querySelector(".feedback")?.textContent).toContain("作答已提交"));
+
+    // Objective answers are graded in Rust; free text has to be asked for.
+    await clickAsync(screen.getByText("让 Orbit 评阅这段作答"));
+    await waitFor(() => expect(backend.calls).toContain("learning_respond"));
+    await waitFor(() =>
+      expect(document.querySelector(".feedback")?.textContent).toContain("已评阅 · 正确度 62%"),
+    );
+    expect(document.body.textContent).toContain("把无穷远点当成了普通点");
+    // The verdict is part of the conversation, not a disappearing toast.
+    expect(document.body.textContent).toContain(
+      "你抓住了方向对应的直觉，但还没有说清它为什么必然是「一个」点。",
+    );
+  });
 });
 
 describe("route creation", () => {

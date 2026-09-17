@@ -193,7 +193,14 @@ the node also changed the roadmap.
 | `learning_finish` | `{ input: { sessionId } }` | `void` |
 | `quiz_list` | `{ nodeId }` | `QuizQuestion[]` |
 | `quiz_submit` | `{ input: { questionId, answer: string[], sessionId? } }` | `QuizResult` |
+| `learning_respond` | `{ input: { sessionId, answer } }` | `LearningEvaluation` |
 | `tutor_send` | `{ input: { sessionId, message } }` | `TutorTurn` |
+
+`learning_respond` is the model's door for answers string matching cannot judge
+(`short`). It requires an active session and a non-empty answer, writes a
+`learning_attempts` row, and returns correctness, misconceptions, a mastery
+delta and a follow-up question. Imported evidence is used when present but is
+no longer required.
 
 `tutor_send` persists both sides of the conversation into `learning_messages`.
 If the reply names a misconception, it also inserts a `misconception_detected`

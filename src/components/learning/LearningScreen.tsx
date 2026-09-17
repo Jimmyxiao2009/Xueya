@@ -170,11 +170,14 @@ export function LearningScreen({
                   <QuizCard
                     question={question}
                     draft={store.draft}
+                    evaluation={store.evaluation}
+                    reviewing={store.reviewing}
                     onSelect={store.selectOption}
                     onText={store.setText}
                     onPhoto={store.setPhoto}
                     onSubmit={store.submit}
                     onAdvance={store.advance}
+                    onReview={store.review}
                     phase={phase}
                   />
                 ) : (

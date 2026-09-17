@@ -139,7 +139,11 @@ The wire DTOs use the backend names; `src/api.ts` is where the rename happens.
 4. **Answer** — `quiz_submit` grades the attempt. Objective kinds
    (`single`/`multi`/`fill`) are graded locally by `domain/quiz.rs`;
    `short`/`image` come back `graded: false` ("已提交 · 待评阅") and do not
-   move the learner model.
+   move the learner model. A free-text answer is not a dead end: the card
+   offers 让 Orbit 评阅这段作答, which calls `learning_respond`, records a
+   `learning_attempts` row, moves mastery, and puts the verdict in the chat.
+   Evidence chunks sharpen that grade but are not required — a route planned
+   before anything was imported can still be assessed.
 5. **Diagnose** — two things can go wrong, and both are handled the same way:
    a wrong objective answer writes a `learner_states` row, and a tutor turn
    that names a misconception writes an `adaptation_events` row of kind
@@ -254,7 +258,7 @@ swipe preview must render a neighbouring route synchronously, mid-gesture.
 | --- | --- | --- |
 | Rust unit | `src-tauri/src/**` (42 tests) | repo CRUD, migrations, planner, grading, mastery, chunking, hashing |
 | Rust integration | `src-tauri/tests/learning_loop.rs` (10 tests) | the loop end to end against a real SQLite file |
-| Frontend | `src/test/app.test.tsx` (13 tests) | route switching, lesson open/close, quiz submit (correct / wrong / ungraded), route creation, web collection, BYOK save (key never echoed), source library, tutor adaptation |
+| Frontend | `src/test/app.test.tsx` (14 tests) | route switching, lesson open/close, quiz submit (correct / wrong / ungraded), model review of a free-text answer, route creation, web collection, BYOK save (key never echoed), source library, tutor adaptation |
 | Frontend unit | `src/lib/design.test.ts` (13 tests) | road geometry, drag physics, release timing, clip math, node faces |
 
 `src/test/fakeBackend.ts` implements the IPC contract in memory (including job
@@ -278,8 +282,9 @@ title) and both are real screens, not stubs:
 
 These are real and unfinished:
 
-* `learning_respond` (free-text answers to a check question) is graded by the
-  model but does not feed `learner_states` the way the tutor's diagnosis does.
+* `learning_respond` records an attempt and moves mastery, but a failed
+  free-text answer does not yet insert practice the way a failed objective
+  answer does — only the tutor's diagnosis does that.
 * The tutor adapts by *inserting practice*. It cannot yet shorten, reorder or
   re-word the remaining steps of the lesson it is in.
 * Web collection imports the top hits as sources and grounds the route in them,
