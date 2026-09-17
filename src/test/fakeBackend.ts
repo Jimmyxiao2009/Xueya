@@ -438,6 +438,10 @@ export class FakeBackend {
           insertedNodeId: adaptation ? "inserted" : null,
         };
       }
+      case "knowledge_search":
+        return [];
+      case "knowledge_get_object":
+        return null;
       case "learning_respond":
         return {
           feedback: "你抓住了方向对应的直觉，但还没有说清它为什么必然是「一个」点。",

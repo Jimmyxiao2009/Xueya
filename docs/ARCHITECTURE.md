@@ -254,10 +254,21 @@ swipe preview must render a neighbouring route synchronously, mid-gesture.
 
 ## 7. Testing
 
+`src/test/ipc-contract.test.ts` is worth calling out. TypeScript and Rust share
+nothing but a string, so a renamed command would compile on both sides and only
+fail at runtime inside the WebView. That file parses `api.ts`, `lib.rs` and the
+fake backend and asserts three things: every command the frontend calls is
+registered in `generate_handler!`, every registered command is either called or
+on an explicit `BACKEND_ONLY` list, and every called command is implemented by
+the fake — so a test can never pass by silently hitting an unimplemented
+command. It also asserts both parsed sets are non-empty, so the check cannot
+pass vacuously.
+
 | Layer | Where | What it proves |
 | --- | --- | --- |
 | Rust unit | `src-tauri/src/**` (42 tests) | repo CRUD, migrations, planner, grading, mastery, chunking, hashing |
 | Rust integration | `src-tauri/tests/learning_loop.rs` (10 tests) | the loop end to end against a real SQLite file |
+| Contract | `src/test/ipc-contract.test.ts` (3 tests) | command names agree across `api.ts`, `lib.rs` and the fake backend |
 | Frontend | `src/test/app.test.tsx` (14 tests) | route switching, lesson open/close, quiz submit (correct / wrong / ungraded), model review of a free-text answer, route creation, web collection, BYOK save (key never echoed), source library, tutor adaptation |
 | Frontend unit | `src/lib/design.test.ts` (13 tests) | road geometry, drag physics, release timing, clip math, node faces |
 

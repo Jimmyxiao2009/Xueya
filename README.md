@@ -47,7 +47,7 @@ npm run tauri build        # 打包桌面应用
 ```bash
 npm run typecheck          # tsc --noEmit
 npm run lint               # eslint
-npm run test               # vitest（前端 27 个测试）
+npm run test               # vitest（前端 30 个测试）
 npm run build              # tsc + vite build
 
 cd src-tauri
