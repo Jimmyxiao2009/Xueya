@@ -10,7 +10,7 @@ import {
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { watchJob, type RouteCreateInput } from "@/api";
+import { watchJob } from "@/api";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { Toast } from "@/components/layout/Toast";
 import { RoadmapLayer } from "@/components/roadmap/RoadmapLayer";
@@ -19,7 +19,10 @@ import { NoticeBanner } from "@/components/roadmap/NoticeBanner";
 import { LessonScreen } from "@/components/lesson/LessonScreen";
 import { LessonPane } from "@/components/lesson/LessonPane";
 import { LearningScreen } from "@/components/learning/LearningScreen";
-import { CreateRouteScreen } from "@/screens/CreateRouteScreen";
+import {
+  CreateRouteScreen,
+  type RouteCreateFormInput,
+} from "@/screens/CreateRouteScreen";
 import { GeneratingScreen } from "@/screens/GeneratingScreen";
 import { SettingsScreen } from "@/screens/SettingsScreen";
 import { SourcesScreen } from "@/screens/SourcesScreen";
@@ -36,6 +39,7 @@ import { useLearningStore } from "@/stores/learningStore";
 import { useLessonStore } from "@/stores/lessonStore";
 import { useJobStore } from "@/stores/jobStore";
 import { useRouteStore } from "@/stores/routeStore";
+import { useAppStore } from "@/stores/appStore";
 import { useSourceStore } from "@/stores/sourceStore";
 import { toast, useNavStore } from "@/stores/uiStore";
 
@@ -82,6 +86,9 @@ export default function App() {
 
   const sources = useSourceStore((state) => state.sources);
   const loadSources = useSourceStore((state) => state.load);
+  const collectSources = useSourceStore((state) => state.collect);
+  const searchConfigured = useAppStore((state) => state.info?.searchConfigured ?? false);
+  const refreshInfo = useAppStore((state) => state.refresh);
 
   const lessons = useLessonStore((state) => state.byNode);
   const prepareLesson = useLessonStore((state) => state.prepare);
@@ -125,8 +132,10 @@ export default function App() {
   useEffect(() => {
     if (bootedRef.current) return;
     bootedRef.current = true;
-    void Promise.all([loadRoutes(), loadSources()]).then(() => setBooted(true));
-  }, [loadRoutes, loadSources]);
+    void Promise.all([loadRoutes(), loadSources(), refreshInfo()]).then(() =>
+      setBooted(true),
+    );
+  }, [loadRoutes, loadSources, refreshInfo]);
 
   /* --------------------------------------------------------------- view layer */
 
@@ -531,11 +540,22 @@ export default function App() {
   }, [activeNodeId, completeNode, learning, setView]);
 
   const submitCreate = useCallback(
-    async (input: RouteCreateInput) => {
+    async (input: RouteCreateFormInput) => {
       if (creating) return;
       setCreating(true);
       setGeneratingTopic(input.topic);
-      const jobId = await useRouteStore.getState().createRoute(input);
+      const { collectWeb, ...request } = input;
+      let sourceIds = request.sourceIds ?? [];
+      if (collectWeb) {
+        // Search and import before the job starts: the progress the learner
+        // sees on the next screen is about the plan, not the crawl.
+        const collected = await collectSources(input.topic, 6);
+        sourceIds = [...sourceIds, ...collected];
+        if (!collected.length) toast("没有找到可用的网页，先用你添加的资料");
+      }
+      const jobId = await useRouteStore
+        .getState()
+        .createRoute({ ...request, sourceIds });
       if (!jobId) {
         setCreating(false);
         toast("无法创建这条路线");
@@ -549,7 +569,7 @@ export default function App() {
         toast("路线生成失败");
       }
     },
-    [applyJob, creating, setView, startJob],
+    [applyJob, collectSources, creating, setView, startJob],
   );
 
   const backToLayer = useCallback(() => {
@@ -655,6 +675,7 @@ export default function App() {
           onBack={backToLayer}
           onCreate={submitCreate}
           submitting={creating}
+          searchConfigured={searchConfigured}
         />
       ) : null}
 

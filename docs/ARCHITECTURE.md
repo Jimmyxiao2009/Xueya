@@ -115,6 +115,11 @@ The wire DTOs use the backend names; `src/api.ts` is where the rename happens.
 
 ## 4. The learning loop, end to end
 
+0. **Collect** — if 联网搜集资料 is on *and* a search provider is configured,
+   the shell calls `search_web`, imports each hit with `source_import_url`, and
+   passes the resulting ids to step 1. The route is then planned against real
+   material rather than against nothing. With no provider the toggle is
+   inert and the form says so, instead of silently pretending to search.
 1. **Create a route** — `course_create` inserts a `jobs` row and returns it.
    The frontend polls `job_get` (~220 ms) and renders real phases.
 2. **Plan** — the job body runs `curriculum::plan()`: a deterministic planner
@@ -263,13 +268,12 @@ title) and both are real screens, not stubs:
 
 These are real and unfinished:
 
-* `search_web` is implemented (`search/brave.rs`) and configurable from
-  Settings, but the create-route form does not yet request web collection — it
-  imports the links you paste and nothing more.
 * `learning_respond` / `tutor_send` are wired to a real backend service and
   rendered in the chat, but the tutor's suggestions do not yet branch the plan.
-* The create form's 联网搜集资料 toggle stores its value but does not change
-  what the backend does.
+* Web collection imports the top hits as sources and grounds the route in them,
+  but it does not de-duplicate near-identical pages or re-rank by quality.
+* A provider's API key can be tested and stored, but nothing verifies the
+  embedding model actually exists on the configured endpoint until a job runs.
 * Bundling is configured (`bundle.targets: "all"`) but only `--no-bundle` builds
   have been run in this environment, because the MSI/NSIS toolchain is not
   available offline.

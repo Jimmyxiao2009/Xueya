@@ -12,6 +12,8 @@ interface SourceState {
   importUrl: (url: string, title?: string) => Promise<string | null>;
   remove: (id: string) => Promise<void>;
   reindex: (id: string) => Promise<void>;
+  /** Search the web and import the hits as sources; returns the new ids. */
+  collect: (query: string, count?: number) => Promise<string[]>;
 }
 
 function base64Of(buffer: ArrayBuffer): string {
@@ -84,6 +86,25 @@ export const useSourceStore = create<SourceState>((set, get) => ({
       set({ error: errorOf(error).message });
       return null;
     }
+  },
+
+  collect: async (query, count = 6) => {
+    let results: Array<{ url: string; title: string }>;
+    try {
+      results = await api.searchWeb({ query, count });
+    } catch (error) {
+      set({ error: errorOf(error).message });
+      return [];
+    }
+    const known = new Set(get().sources.map((source) => source.uri ?? ""));
+    const ids: string[] = [];
+    for (const result of results) {
+      if (!result.url || known.has(result.url)) continue;
+      known.add(result.url);
+      const id = await get().importUrl(result.url, result.title);
+      if (id) ids.push(id);
+    }
+    return ids;
   },
 
   reindex: async (id) => {

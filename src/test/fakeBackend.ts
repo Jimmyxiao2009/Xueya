@@ -263,7 +263,7 @@ export class FakeBackend {
           providerCount: 1,
           sourceCount: this.sources.length,
           courseCount: this.routes.length,
-          searchConfigured: false,
+          searchConfigured: Boolean(this.settings.braveApiKey),
         };
       case "course_list":
         return this.routes.map((route) => this.courseDto(route));
@@ -296,6 +296,7 @@ export class FakeBackend {
           startedAt: NOW,
           completedAt: null,
           __topic: topic,
+          __sourceIds: (input.sourceIds as string[] | undefined) ?? [],
         });
         return this.jobs.get(jobId);
       }
@@ -547,7 +548,20 @@ export class FakeBackend {
         this.sources = this.sources.filter((source) => (source as { id: string }).id !== id);
         return null;
       case "search_web":
-        return [];
+        return [
+          {
+            title: String(input.query) + " · 综述",
+            url: "https://example.com/a",
+            snippet: "第一篇命中结果。",
+            source: "brave",
+          },
+          {
+            title: String(input.query) + " · 讲义",
+            url: "https://example.com/b",
+            snippet: "第二篇命中结果。",
+            source: "brave",
+          },
+        ];
       case "job_get": {
         const job = this.jobs.get(String(args?.id));
         if (!job) throw { code: "not_found", message: "job not found", retryable: false };

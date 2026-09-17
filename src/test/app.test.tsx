@@ -327,6 +327,37 @@ describe("management layer", () => {
     expect((document.querySelector("#provider-key") as HTMLInputElement).value).toBe("");
   });
 
+  it("collects web results as real sources before planning a route", async () => {
+    // A search provider is configured, so the create form's toggle can deliver.
+    backend.settings.braveApiKey = "brave-test-key";
+    mountApp();
+    await boot();
+    await openLayer();
+
+    await clickAsync(layerButton("探索新的未知"));
+    await waitFor(() => expect(document.querySelector("#topic")).toBeTruthy());
+    await act(async () => {
+      fireEvent.change(document.querySelector("#topic") as HTMLInputElement, {
+        target: { value: "伽罗瓦理论" },
+      });
+    });
+
+    await clickAsync(document.querySelector(".create-dock .primary"));
+
+    await waitFor(() => expect(backend.calls).toContain("search_web"), { timeout: 3000 });
+    await waitFor(() => expect(backend.calls).toContain("course_create"), {
+      timeout: 3000,
+    });
+    // Both hits were imported, and their ids reached the planner.
+    expect(backend.sources.length).toBe(2);
+    // Import jobs are queued first, so pick the planning job by its payload.
+    const planning = [...backend.jobs.values()].find(
+      (candidate) => (candidate as { __sourceIds?: string[] }).__sourceIds,
+    ) as { __sourceIds: string[] };
+    expect(planning.__sourceIds).toHaveLength(2);
+    await waitFor(() => expect(subjectName()).toBe("伽罗瓦理论"), { timeout: 4000 });
+  });
+
   it("lists imported sources and can drop one", async () => {
     backend.sources.push({
       id: "source-1",

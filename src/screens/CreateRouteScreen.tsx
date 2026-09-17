@@ -5,10 +5,21 @@ import { hostnameOf, sizeLabel } from "@/lib/format";
 import { useSourceStore } from "@/stores/sourceStore";
 import { toast } from "@/stores/uiStore";
 
+/**
+ * `collectWeb` is a shell concern, not part of the route itself: the shell runs
+ * the search, imports the hits as sources, and only then asks the backend to
+ * plan a route grounded in them.
+ */
+export interface RouteCreateFormInput extends RouteCreateInput {
+  collectWeb?: boolean;
+}
+
 interface CreateRouteScreenProps {
   onBack: () => void;
-  onCreate: (input: RouteCreateInput) => void;
+  onCreate: (input: RouteCreateFormInput) => void;
   submitting: boolean;
+  /** Whether a search provider is configured; the toggle explains itself if not. */
+  searchConfigured: boolean;
 }
 
 interface PendingFile {
@@ -37,7 +48,12 @@ const LEVELS: { value: string; label: string }[] = [
  * and sent as bytes, links are fetched by Rust, and both produce a source row
  * the route can then cite.
  */
-export function CreateRouteScreen({ onBack, onCreate, submitting }: CreateRouteScreenProps) {
+export function CreateRouteScreen({
+  onBack,
+  onCreate,
+  submitting,
+  searchConfigured,
+}: CreateRouteScreenProps) {
   const [topic, setTopic] = useState("");
   const [goal, setGoal] = useState("");
   const [depth, setDepth] = useState("overview");
@@ -117,6 +133,7 @@ export function CreateRouteScreen({ onBack, onCreate, submitting }: CreateRouteS
       desiredDepth: depth,
       experienceLevel: level,
       sourceIds,
+      collectWeb: web && searchConfigured,
     });
   };
 
@@ -312,8 +329,9 @@ export function CreateRouteScreen({ onBack, onCreate, submitting }: CreateRouteS
                 ))}
               </div>
               <p className="prototype-note">
-                联网检索需要先在设置中配置搜索服务；未配置时会直接使用你添加的资料，
-                并由本地模型按关键词检索片段。
+                {searchConfigured
+                  ? "生成路线前会先按主题检索一轮，把命中的页面导入资料库，并作为引用来源。"
+                  : "还没有配置搜索服务。打开「设置 → 联网搜索」后，这里会真的去检索并导入资料；现在会直接使用你添加的内容。"}
               </p>
             </div>
           </div>
@@ -334,7 +352,7 @@ export function CreateRouteScreen({ onBack, onCreate, submitting }: CreateRouteS
           disabled={busy || submitting}
           data-motion="own"
         >
-          生成学习路线 <Icon name="arrow" />
+          {submitting ? "正在准备资料…" : "生成学习路线"} <Icon name="arrow" />
         </button>
       </footer>
     </>
