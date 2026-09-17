@@ -12,6 +12,12 @@ publish = false
 name = "verruckt_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# The MSVC linker prints a progress line to stdout for the cdylib/staticlib
+# artefacts, which rustc 1.9x reports as a linker_messages warning. It is noise,
+# not a problem with the crate.
+[lints.rust]
+linker_messages = "allow"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
