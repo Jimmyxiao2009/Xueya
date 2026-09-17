@@ -15,8 +15,9 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct LearningStart {
     pub session: LearningSession,
-    pub lesson: Lesson,
-    pub citations: Vec<crate::domain::Chunk>,
+    /// The same prepared payload the lesson screen already showed, so starting a
+    /// session never regenerates or contradicts it.
+    pub prepared: crate::services::course_service::PreparedLesson,
     pub mastery: f64,
 }
 
@@ -61,11 +62,11 @@ impl<'a> LearningService<'a> {
         learning_repo::insert_session(&self.state.pool, &session).await?;
         course_repo::update_node_status(&self.state.pool, node_id, CourseNodeStatus::InProgress)
             .await?;
+        let mastery = prepared.mastery;
         Ok(LearningStart {
             session,
-            lesson: prepared.lesson,
-            citations: prepared.citations,
-            mastery: prepared.mastery,
+            prepared,
+            mastery,
         })
     }
 

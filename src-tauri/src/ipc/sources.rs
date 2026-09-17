@@ -34,10 +34,10 @@ pub async fn source_import_bytes(
     let jobs = state.jobs.clone();
     let job = jobs
         .start("source_ingestion", move |handle| async move {
-            IngestionService::new(&state)
+            let source = IngestionService::new(&state)
                 .ingest_bytes(ingest_input, Some(&handle))
-                .await
-                .map(|_| ())
+                .await?;
+            record_source_result(&state, &handle, source.id).await
         })
         .await?;
     Ok(JobDto::from(&job))
@@ -98,13 +98,28 @@ pub async fn source_import_url(
     let jobs = state.jobs.clone();
     let job = jobs
         .start("source_ingestion", move |handle| async move {
-            IngestionService::new(&state)
+            let source = IngestionService::new(&state)
                 .ingest_url(&input.url, input.title, Some(&handle))
-                .await
-                .map(|_| ())
+                .await?;
+            record_source_result(&state, &handle, source.id).await
         })
         .await?;
     Ok(JobDto::from(&job))
+}
+
+/// Publish the new source id on the job so the creation flow can attach it to
+/// the route it is about to build.
+async fn record_source_result(
+    state: &AppState,
+    handle: &crate::jobs::manager::JobHandle,
+    source_id: Uuid,
+) -> Result<(), AppError> {
+    crate::db::repo::jobs::set_job_result(
+        &state.pool,
+        handle.id(),
+        &serde_json::json!({ "sourceId": source_id }).to_string(),
+    )
+    .await
 }
 
 #[tauri::command]

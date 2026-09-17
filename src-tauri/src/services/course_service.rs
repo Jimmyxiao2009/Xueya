@@ -28,12 +28,24 @@ use uuid::Uuid;
 pub struct PreparedLesson {
     pub lesson: Lesson,
     pub citations: Vec<crate::domain::Chunk>,
+    /// Where each citation came from, so the materials tab can name the source
+    /// instead of showing a bare chunk.
+    pub citation_sources: Vec<CitationSource>,
     pub mastery: f64,
     pub steps: Vec<LessonStep>,
     pub questions: Vec<QuizQuestion>,
     /// `ai`, `mock` or `deterministic` — surfaced in the UI so the product never
     /// pretends a template was a model.
     pub generated_by: String,
+}
+
+/// The origin of one cited chunk.
+#[derive(Debug, Clone)]
+pub struct CitationSource {
+    pub chunk_id: Uuid,
+    pub source_title: String,
+    pub uri: Option<String>,
+    pub kind: String,
 }
 
 /// The user's answer to "what do you want to learn?".
@@ -535,7 +547,8 @@ impl<'a> CourseService<'a> {
                 Ok(lesson) => {
                     return Ok(PreparedLesson {
                         lesson,
-                        citations,
+                        citations: citations.clone(),
+                        citation_sources: self.citation_sources(&citations).await,
                         mastery,
                         steps,
                         questions,
@@ -554,12 +567,45 @@ impl<'a> CourseService<'a> {
         };
         Ok(PreparedLesson {
             lesson,
-            citations,
+            citations: citations.clone(),
+            citation_sources: self.citation_sources(&citations).await,
             mastery,
             steps,
             questions,
             generated_by: node.generated_by.clone(),
         })
+    }
+
+    /// One join instead of a query per chunk: citations are shown as a list.
+    async fn citation_sources(&self, chunks: &[crate::domain::Chunk]) -> Vec<CitationSource> {
+        if chunks.is_empty() {
+            return Vec::new();
+        }
+        let placeholders = vec!["?"; chunks.len()].join(",");
+        let sql = format!(
+            "SELECT c.id, s.title, s.uri, s.kind FROM chunks c \
+             JOIN documents d ON d.id = c.document_id \
+             JOIN sources s ON s.id = d.source_id WHERE c.id IN ({placeholders})"
+        );
+        let mut statement = sqlx::query_as::<_, (Uuid, String, Option<String>, String)>(&sql);
+        for chunk in chunks {
+            statement = statement.bind(chunk.id);
+        }
+        match statement.fetch_all(&self.state.pool).await {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(chunk_id, source_title, uri, kind)| CitationSource {
+                    chunk_id,
+                    source_title,
+                    uri,
+                    kind,
+                })
+                .collect(),
+            Err(error) => {
+                tracing::debug!(%error, "citation sources unavailable");
+                Vec::new()
+            }
+        }
     }
 
     async fn ai_lesson(

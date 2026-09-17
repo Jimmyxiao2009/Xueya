@@ -2,6 +2,7 @@ use super::dto::{
     LearningEvaluationDto, LearningFinishInput, LearningRespondInput, LearningStartDto,
     LearningStartInput, LessonDto,
 };
+use crate::db::repo::courses as course_repo;
 use crate::error::AppError;
 use crate::services::learning_service::LearningService;
 use crate::state::AppState;
@@ -15,9 +16,11 @@ pub async fn learning_start(
     let started = LearningService::new(&state)
         .start(input.node_id, None)
         .await?;
+    let node = course_repo::get_node(&state.pool, input.node_id).await?;
+    let lesson = LessonDto::from_prepared(&started.prepared, &node);
     Ok(LearningStartDto {
         session_id: started.session.id,
-        lesson: LessonDto::from_lesson(&started.lesson, &started.citations),
+        lesson,
         mastery: started.mastery,
     })
 }

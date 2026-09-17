@@ -346,6 +346,10 @@ pub struct LessonCitationDto {
     pub quote: String,
     pub text: String,
     pub page_number: Option<i64>,
+    /// Name of the source the chunk came from, when it is known.
+    pub source_title: Option<String>,
+    /// Original link, so the learner can open the real material.
+    pub uri: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,6 +378,16 @@ impl LessonDto {
         node: &CourseNode,
     ) -> Self {
         let mut dto = Self::from_lesson(&prepared.lesson, &prepared.citations);
+        for citation in &mut dto.citations {
+            if let Some(source) = prepared
+                .citation_sources
+                .iter()
+                .find(|source| source.chunk_id == citation.chunk_id)
+            {
+                citation.source_title = Some(source.source_title.clone());
+                citation.uri = source.uri.clone();
+            }
+        }
         dto.steps = prepared.steps.iter().map(LessonStepDto::from).collect();
         dto.questions = prepared
             .questions
@@ -401,6 +415,8 @@ impl LessonDto {
                         quote: citation.quote.clone(),
                         text: chunk.text.clone(),
                         page_number: chunk.page_number,
+                        source_title: None,
+                        uri: None,
                     })
             })
             .collect();
@@ -505,6 +521,8 @@ pub fn lesson_citation_dtos(lesson: &Lesson) -> Vec<LessonCitationDto> {
             quote: citation.quote.clone(),
             text: String::new(),
             page_number: None,
+            source_title: None,
+            uri: None,
         })
         .collect()
 }

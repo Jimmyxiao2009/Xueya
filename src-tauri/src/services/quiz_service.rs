@@ -53,6 +53,32 @@ impl<'a> QuizService<'a> {
         let node = course_repo::get_node(&self.state.pool, question.node_id).await?;
         let course = course_repo::get_course(&self.state.pool, node.course_id).await?;
 
+        // A photograph is a real artefact but not yet a machine-readable answer.
+        // Recording it as a grade would corrupt the learner model, so the whole
+        // "did they understand it" path is skipped and the UI is told the truth.
+        if question.kind() == crate::domain::QuizKind::Image {
+            return Ok(QuizOutcome {
+                grade: QuizGrade {
+                    correct: false,
+                    graded: false,
+                    score: 0.0,
+                    feedback:
+                        "照片已保存在本机。识图评阅尚未接入，这一题不会自动判分，也不会影响你的掌握度。"
+                            .to_owned(),
+                    expected: Vec::new(),
+                    misconceptions: Vec::new(),
+                },
+                node_id: node.id,
+                course_id: course.id,
+                mastery: 0.0,
+                confidence: 0.0,
+                next_review: None,
+                adaptation: None,
+                inserted_node_id: None,
+                authoritative: false,
+            });
+        }
+
         let (grade, authoritative) = match grade_locally(&question, &answers) {
             Some(grade) => (grade, true),
             None => self.tutor_grade(&node, &question, &answers).await?,
@@ -176,7 +202,7 @@ impl<'a> QuizService<'a> {
             return Ok((
                 QuizGrade {
                     correct: false,
-                    graded: false,
+                    graded: true,
                     score: 0.0,
                     feedback: "还没有作答。写下你的想法，哪怕只有一句也可以。".to_owned(),
                     expected: Vec::new(),

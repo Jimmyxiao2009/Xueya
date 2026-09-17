@@ -62,8 +62,42 @@ impl QuizQuestion {
         serde_json::from_str(&self.options_json).unwrap_or_default()
     }
 
+    /// The answer key, resolved to something a human can read.
+    ///
+    /// Question banks may store choice answers either as option indices
+    /// (\`["0"]\`) or as the option text itself; both are accepted and both
+    /// come back as text so the UI can show "correct answer: …".
     pub fn expected(&self) -> Vec<String> {
-        serde_json::from_str(&self.answer_json).unwrap_or_default()
+        let raw: Vec<String> = serde_json::from_str(&self.answer_json).unwrap_or_default();
+        let options = self.options();
+        if options.is_empty() {
+            return raw;
+        }
+        raw.iter()
+            .map(|value| {
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| options.get(index).cloned())
+                    .unwrap_or_else(|| value.clone())
+            })
+            .collect()
+    }
+
+    /// Resolve one submitted value the same way, so an index and the option
+    /// text are equivalent answers.
+    fn resolve(&self, value: &str) -> String {
+        let options = self.options();
+        if options.is_empty() {
+            return value.to_owned();
+        }
+        value
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| options.get(index).cloned())
+            .unwrap_or_else(|| value.to_owned())
     }
 
     pub fn kind(&self) -> QuizKind {
@@ -122,13 +156,15 @@ pub fn grade_locally(question: &QuizQuestion, answers: &[String]) -> Option<Quiz
 
     let (correct, score) = match kind {
         QuizKind::Single => {
-            let picked = answers.first().map(String::as_str).unwrap_or_default();
-            let ok = normalize_text(picked) == normalize_text(&expected[0]);
+            let picked = question.resolve(answers.first().map(String::as_str).unwrap_or_default());
+            let ok = normalize_text(&picked) == normalize_text(&expected[0]);
             (ok, if ok { 1.0 } else { 0.0 })
         }
         QuizKind::Multi => {
-            let mut picked: Vec<String> =
-                answers.iter().map(|value| normalize_text(value)).collect();
+            let mut picked: Vec<String> = answers
+                .iter()
+                .map(|value| normalize_text(&question.resolve(value)))
+                .collect();
             let mut wanted: Vec<String> =
                 expected.iter().map(|value| normalize_text(value)).collect();
             picked.sort();
@@ -147,10 +183,12 @@ pub fn grade_locally(question: &QuizQuestion, answers: &[String]) -> Option<Quiz
             }
         }
         QuizKind::Fill => {
-            let picked = answers.first().map(String::as_str).unwrap_or_default();
-            let ok = expected
-                .iter()
-                .any(|value| normalize_text(value) == normalize_text(picked));
+            let picked = question.resolve(answers.first().map(String::as_str).unwrap_or_default());
+            let picked = normalize_text(&picked);
+            let ok = expected.iter().any(|value| {
+                let wanted = normalize_text(value);
+                picked == wanted || (wanted.chars().count() >= 2 && picked.contains(&wanted))
+            });
             (ok, if ok { 1.0 } else { 0.0 })
         }
         _ => return None,
