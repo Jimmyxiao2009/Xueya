@@ -1,0 +1,266 @@
+# Orbit / Verruckt — Architecture
+
+Orbit is a local-first desktop learning app. It turns sources into a living
+learning route and keeps the whole loop — **Sources → Synthesis → Roadmap →
+Learn → Question → Diagnose → Adapt → Review** — inside one SQLite database on
+the user's machine.
+
+This document describes the shape of the system as it is built today. Anything
+marked _not wired_ is genuinely absent, not "coming soon" wording for work that
+was silently skipped.
+
+---
+
+## 1. Runtime shape
+
+```
+┌──────────────────────────────── WebView (React 19) ────────────────────────────────┐
+│                                                                                    │
+│  screens/            components/                  lib/                              │
+│  ├ CreateRouteScreen ├ layout/  AppHeader, Toast  ├ swipeEngine.ts   (imperative)    │
+│  ├ GeneratingScreen  ├ roadmap/ RoadmapScreen,    ├ lessonTransition.ts             │
+│  └ ...               │          RoadmapLayer,     ├ roadPath.ts                     │
+│                      │          NoticeBanner      ├ nodeMeta.ts / format.ts / icons │
+│                      ├ lesson/  LessonScreen,     └ ...                             │
+│                      │          LessonPane                                          │
+│                      └ learning/ LearningScreen, LearningPlan, QuizCard             │
+│                                                                                    │
+│  stores/ (zustand)  uiStore · routeStore · jobStore · lessonStore · learningStore   │
+│                     sourceStore                                                     │
+│                                                                                    │
+│  api.ts  ── typed wrappers + DTOs, the ONLY place that calls invoke() ──────────────┤
+└────────────────────────────────────────┬───────────────────────────────────────────┘
+                                         │ Tauri IPC (invoke / commands)
+┌────────────────────────────────────────┴───────────────────────────────────────────┐
+│                              Rust core (`verruckt_lib`)                            │
+│                                                                                    │
+│  ipc/        thin command layer: parse DTO → call service → serialise DTO           │
+│  services/   use-case orchestration (course, learning, quiz, tutor, ingestion…)     │
+│  domain/     pure types + rules (course, plan, quiz, learner, adaptation, job…)     │
+│  db/repo/    sqlx queries, one module per aggregate                                 │
+│  ai/         AIProvider trait, MockProvider, OpenAI-compatible provider, registry    │
+│  curriculum/ deterministic planner: topic + depth + level → node list               │
+│  ingest/     file/URL → text → chunks → embeddings                                  │
+│  knowledge/  retrieval, rerank, vector index, graph                                 │
+│  jobs/       background job manager, progress events, cancellation                  │
+│  secrets/    API keys in the OS keyring; never returned to the WebView              │
+└────────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                  SQLite (app data dir)
+```
+
+### Why the split
+
+* **`api.ts` is the only IPC caller.** Every command has one typed wrapper and
+  one DTO interface. Screens never see a raw JSON blob, and a backend rename
+  breaks the build instead of failing at runtime.
+* **Rust owns the truth.** The frontend never computes progress, mastery or
+  adaptation — it renders what `course_get` / `quiz_submit` return.
+* **`ai/` is a trait boundary.** `ChatProvider` and `EmbeddingProvider` are
+  traits; `MockProvider` implements both. With no API key, retrieval, lesson
+  synthesis and quiz generation still work, deterministically.
+
+---
+
+## 2. Three layers of the product
+
+| Layer | Question it answers | Where it lives |
+| --- | --- | --- |
+| **Research** | "What do my sources actually say?" | `ingest/`, `knowledge/`, `knowledge_fs/`, `search/` |
+| **Curriculum** | "What is the order, and why?" | `curriculum/`, `services/course_service.rs`, `domain/plan.rs` |
+| **Learning** | "What does *this* learner do next?" | `services/learning_service.rs`, `learning/`, `domain/learner.rs`, `domain/adaptation.rs` |
+
+The Research layer produces evidence chunks. The Curriculum layer turns them
+into nodes. The Learning layer mutates the route in response to answers — that
+mutation is what makes Orbit different from a static course list.
+
+---
+
+## 3. Data model
+
+`src-tauri/migrations/0001_init.sql` holds the base schema (sources, documents,
+chunks, embeddings, courses, course_nodes, jobs, providers, settings).
+`0002_learning_loop.sql` adds the learning loop:
+
+| Table | Purpose |
+| --- | --- |
+| `courses` (+`goal`, `experience_level`, `desired_depth`, `kind`, `current_node_id`, `seeded`) | a route; `seeded` marks the two demo routes |
+| `course_nodes` (+`kind`, `confidence`, `review_at`, `generated_by`) | one stop on the roadmap; `kind ∈ lesson·review·quiz·practice` |
+| `knowledge_points` / `node_knowledge_points` | what a node teaches, and the mastery attached to it |
+| `lesson_steps` | the "study plan" list shown inside a lesson |
+| `learner_states` | per knowledge point: mastery, confidence, attempts, review time |
+| `quiz_questions` / `quiz_attempts` | generated questions and every submission |
+| `adaptation_events` | an append-only log of *why* the roadmap changed |
+| `learning_messages` | the tutor conversation attached to a session |
+| `jobs.result_json` | job artefacts (e.g. `{"sourceId": "…"}`, `{"courseId": "…"}`) |
+
+Node and course metadata are stored as JSON strings with **camelCase** keys
+(`concepts`, `dependencies`, `evidenceChunkIds`, `knowledgePointId`, `origin`,
+`learningObjectives`, `sourceIds`, …) so the frontend can read them without a
+mapping layer.
+
+### Naming: `Course` vs `LearningRoute`
+
+The backend calls a route a **course**; the UI calls it a **route** (学习路线).
+This is a deliberate, documented mapping rather than a 15-file rename:
+
+| Backend | Frontend |
+| --- | --- |
+| `Course` / `course_list` / `course_get` | `LearningRoute` / `api.routeList()` / `api.routeGet()` |
+| `CourseNode` / `course_node_*` | `RouteNode` / `api.nodePrepare()` … |
+
+The wire DTOs use the backend names; `src/api.ts` is where the rename happens.
+
+---
+
+## 4. The learning loop, end to end
+
+1. **Create a route** — `course_create` inserts a `jobs` row and returns it.
+   The frontend polls `job_get` (~220 ms) and renders real phases.
+2. **Plan** — the job body runs `curriculum::plan()`: a deterministic planner
+   that always produces a usable route. If an AI provider is configured, its
+   output is validated against `ai/schemas.rs` and merged; on any failure the
+   deterministic plan is kept. Six nodes by default, eight for `deep`, and the
+   intro node is dropped for `advanced`.
+3. **Open a node** — `course_node_prepare` assembles a `PreparedLesson`: the
+   study steps, the concepts, the citation list, and (for review/quiz nodes) a
+   generated question set. `lesson_store.prepare()` caches it per node.
+4. **Answer** — `quiz_submit` grades the attempt. Objective kinds
+   (`single`/`multi`/`fill`) are graded locally by `domain/quiz.rs`;
+   `short`/`image` come back `graded: false` ("已提交 · 待评阅") and do not
+   move the learner model.
+5. **Diagnose** — a wrong objective answer writes a `learner_states` row and
+   emits an `adaptation_events` row of kind `review_inserted`. A review node is
+   spliced in right after the failed node; `course_get` returns the new
+   roadmap, and the home screen shows a notice strip explaining the change.
+6. **Finish** — `course_node_complete` marks the node completed, unlocks the
+   next one, and returns the updated course plus the adaptation.
+7. **Review** — `review_at` on `course_nodes` plus mastery in
+   `learner_states` drive the `dueLabel` copy on the roadmap.
+
+---
+
+## 5. AI provider boundary (BYOK)
+
+```
+ai/traits.rs        trait ChatProvider  { async fn complete(...) }
+                    trait EmbeddingProvider { async fn embed(...) }
+ai/mock.rs          MockProvider — deterministic hashed bag-of-words with CJK
+                    bigrams, 256 dims, L2-normalised. No network, no key.
+ai/openai_compatible.rs  real provider; base URL + model are configurable
+ai/registry.rs      default_chat_provider() / default_embedding_provider()
+```
+
+* `registry::is_mock_active()` is how a service knows whether it is running
+  without a key, so it can choose conservative behaviour.
+* **Keys never reach the frontend.** `provider_upsert` writes the key into the
+  OS keyring via `secrets/keyring_store.rs`. `provider_list` returns
+  `hasApiKey: boolean` and nothing else. There is no command that returns a key,
+  and `AppError` redacts anything that looks like a secret before serialising.
+* Mock embeddings make retrieval and citations work offline: the same 256-dim
+  space is used for documents and queries, so `knowledge_search` returns real
+  ranked chunks even with zero configuration.
+
+---
+
+## 6. Frontend architecture notes
+
+### The swipe engine is not React
+
+`src/lib/swipeEngine.ts` is a framework-free, imperative module:
+
+* `bindSwipeZone(zone, spec)` attaches pointer / touch / wheel listeners and
+  returns a disposer.
+* Drag frames are written straight to `transform` inside
+  `requestAnimationFrame` — a pointer move never triggers a React render.
+* `detailDrag()` is the prototype's weighted physics (lead distance, detent
+  band, resistance slopes, travel cap). `swipeTiming()` is its release curve.
+* The engine is a module singleton with explicit lifecycle
+  (`isSwipeBusy`, `clicksAreSuppressed`, `finishActiveSwipe`,
+  `resetSwipeEngine`). `App.tsx` binds it once and feeds it a stable `SwipeSpec`
+  whose methods read a `latest` ref, so data changes never rebind listeners.
+
+### Preview stages
+
+A swipe needs to show the *destination* before the route/tab actually changes.
+`createPreview()` in `App.tsx` mounts a detached
+`.swipe-preview-stage` with its own `createRoot`, renders
+`RoadmapScreen` (preview) or `LessonPane` into it, and returns a `SwipePreview`.
+On commit, `preview.adopt(commit)` runs the real state change inside
+`flushSync`, then unmounts the stage — so there is never a frame where the
+destination is missing.
+
+### Lesson card → fullscreen transition
+
+`src/lib/lessonTransition.ts` reproduces the prototype exactly:
+
+* `lessonCardClip(bounds, frame)` builds the `inset(...)` clip from the tapped
+  node's bounds.
+* Forward: the roadmap is cloned into `.lesson-underlay` (first child of
+  `#root`), React renders the lesson into `#screen`, `#screen` gets
+  `.screen-opening` (z-26), and the clip animates open while the lesson's own
+  content staggers in.
+* Reverse: the lesson is cloned into `.lesson-opening` appended *after*
+  `#screen`, and every animation runs with `direction: "reverse"` and reversed
+  delays.
+* Every animation shares `document.timeline.currentTime`, so the stagger stays
+  in sync with the clip.
+* Without the Web Animations API (or under `prefers-reduced-motion`) the
+  transition is skipped and the view switches instantly — the screens are
+  already mounted either way.
+
+### Styling
+
+Tailwind v4 is the primary styling system, configured CSS-first in
+`src/styles/index.css` (`@theme` tokens: `--color-canvas`, `--color-paper`,
+`--color-ink`, `--color-muted`, `--color-line`, `--color-accent`, …).
+Orbit's ported CSS lives in `src/styles/components.css` inside a `components`
+cascade layer, so Tailwind utilities always win. See `docs/DESIGN_SYSTEM.md`.
+
+### Stores
+
+| Store | Owns |
+| --- | --- |
+| `uiStore` | view (`home·lesson·learning·create·generating`), tab, active node, direction, toasts |
+| `routeStore` | routes, the active route, per-route details, adaptations, scroll memory |
+| `jobStore` | the active background job and its phase copy |
+| `lessonStore` | prepared lessons, keyed by node id |
+| `learningStore` | the live session: answered set, messages, draft, result, adaptation |
+| `sourceStore` | imported sources and their ingestion jobs |
+
+`routeStore.load()` deliberately loads **every** route's detail up front: a
+swipe preview must render a neighbouring route synchronously, mid-gesture.
+
+---
+
+## 7. Testing
+
+| Layer | Where | What it proves |
+| --- | --- | --- |
+| Rust unit | `src-tauri/src/**` (42 tests) | repo CRUD, migrations, planner, grading, mastery, chunking, hashing |
+| Rust integration | `src-tauri/tests/learning_loop.rs` (10 tests) | the loop end to end against a real SQLite file |
+| Frontend | `src/test/app.test.tsx` (9 tests) | route switching, lesson open/close, quiz submit (correct / wrong / ungraded), route creation |
+| Frontend unit | `src/lib/design.test.ts` (13 tests) | road geometry, drag physics, release timing, clip math, node faces |
+
+`src/test/fakeBackend.ts` implements the IPC contract in memory (including job
+polling and adaptation inserts) rather than stubbing individual calls, so the
+frontend tests exercise the real DTO shapes.
+
+---
+
+## 8. Known gaps
+
+These are real and unfinished:
+
+* No settings UI. `settings_get` / `settings_update` / `provider_*` are typed in
+  `api.ts` and implemented in Rust, but no screen calls them yet — adding a
+  provider today means calling the command directly.
+* No sources screen. Import works from the create-route form
+  (`source_import_bytes`, `source_import_url`), but there is no library view for
+  listing, re-indexing or deleting sources.
+* `learning_respond` / `tutor_send` are wired to a real backend service and
+  rendered in the chat, but the tutor's suggestions do not yet branch the plan.
+* `search_web` is implemented (`search/brave.rs`) and typed, but the create form
+  does not request web collection.
+* Bundling is configured (`bundle.targets: "all"`) but only `--no-bundle` builds
+  have been run in this environment.

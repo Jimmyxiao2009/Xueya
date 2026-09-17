@@ -5,6 +5,9 @@
  * Tailwind's preflight is intentionally NOT imported: Orbit ships its own
  * reset in `components.css`, and replacing it would silently change spacing,
  * heading metrics and button behaviour across the whole product.
+ *
+ * Every rule below lives inside a layer. Unlayered CSS outranks *all* layers,
+ * so a stray top-level rule here would silently beat the ported design layer.
  */
 
 @layer theme, base, components, utilities;
@@ -16,6 +19,30 @@
 @import "./components.css" layer(components);
 @import "./effects.css" layer(components);
 @import "./motion.css" layer(components);
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  /* React mounts here. `#root` is the device frame; `#screen` is the single
+   * view inside it, so lesson transitions can insert an underlay / outgoing
+   * layer as a sibling without React ever fighting over the DOM. */
+  #screen {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* While a lesson card unfolds, the live screen has to paint above the
+   * frozen underlay that holds the roadmap. */
+  #screen.screen-opening {
+    z-index: 26;
+  }
+}
 
 @theme {
   /* Palette — keep in sync with src/styles/tokens.css */
@@ -59,18 +86,4 @@
 
   /* Layout */
   --container-content: 480px;
-}
-
-html,
-body,
-#root {
-  height: 100%;
-}
-
-/* Tailwind utilities live in a later layer than the ported design layer, so a
- * utility class always wins over a component class with the same specificity.
- * This helper keeps the Orbit device frame centred in a desktop Tauri window. */
-.orbit-device {
-  max-width: var(--content-width);
-  margin-inline: auto;
 }

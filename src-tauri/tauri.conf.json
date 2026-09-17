@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Verruckt",
+  "productName": "Orbit",
   "version": "0.1.0",
   "identifier": "app.verruckt.desktop",
   "build": {
@@ -13,12 +13,12 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "Verruckt",
+        "title": "Orbit · 学习的下一站",
         "label": "main",
-        "width": 1280,
-        "height": 840,
-        "minWidth": 960,
-        "minHeight": 640,
+        "width": 420,
+        "height": 880,
+        "minWidth": 360,
+        "minHeight": 600,
         "resizable": true,
         "center": true,
         "dragDropEnabled": true
@@ -36,6 +36,9 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico"
-    ]
+    ],
+    "shortDescription": "把好奇心变成一条不断生长的学习路径。",
+    "longDescription": "Orbit 把资料整理成一条会生长的学习路线：来源 → 综合 → 路线 → 学习 → 提问 → 诊断 → 调整 → 复习。",
+    "category": "Education"
   }
 }

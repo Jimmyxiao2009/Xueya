@@ -1,9 +1,7 @@
 /**
- * Orbit icon set.
- *
- * The path data is copied verbatim from the prototype so the strokes, joins and
- * optical weight stay identical. Icons are decorative by default (`aria-hidden`)
- * — interactive controls carry their own `aria-label`.
+ * Verbatim icon paths from the Orbit prototype. The SVG wrapper lives in
+ * `components/ui/Icon.tsx`; keeping the raw paths here makes the visual
+ * language copy-pasteable and diffable against the reference file.
  */
 export const iconPaths = {
   orbit:
@@ -14,11 +12,11 @@ export const iconPaths = {
   check: '<path d="m5 12 4 4L19 6"/>',
   infinity: '<path d="M12 12c-3-6-10-6-10 0s7 6 10 0 10-6 10 0-7 6-10 0Z"/>',
   line: '<path d="M3 18 21 6M3 6l18 12M12 3v18"/><circle cx="12" cy="12" r="3"/>',
-  review: '<path d="M3 10a9 9 0 1 1 2 8M3 4v6h6M12 7v5l3 2"/>',
+  review:
+    '<path d="M3 10a9 9 0 1 1 2 8M3 4v6h6M12 7v5l3 2"/>',
   quiz: '<path d="m12 2 3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1Z"/>',
   grid: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>',
-  spark:
-    '<path d="m12 3 2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3L12 3ZM20 2v4M18 4h4"/>',
+  spark: '<path d="m12 3 2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3L12 3ZM20 2v4M18 4h4"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   book: '<path d="M12 5v16M12 5C8 2 4 3 2 4v15c4-1 7-1 10 2 3-3 6-3 10-2V4c-3-1-6-2-10 1Z"/>',
   play: '<path d="m8 4 12 8-12 8Z"/>',
@@ -35,6 +33,5 @@ export const iconPaths = {
 export type IconName = keyof typeof iconPaths;
 
 export function iconSvg(name: IconName): string {
-  const path = iconPaths[name] ?? iconPaths.spark;
-  return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${path}</svg>`;
+  return iconPaths[name] ?? iconPaths.spark;
 }
