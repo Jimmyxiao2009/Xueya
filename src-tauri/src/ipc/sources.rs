@@ -1,0 +1,128 @@
+use super::dto::{ImportBytesInput, ImportFilesInput, ImportUrlInput, JobDto, SourceDto};
+use crate::domain::SourceKind;
+use crate::error::AppError;
+use crate::services::ingestion_service::{IngestInput, IngestionService};
+use crate::services::source_service;
+use crate::state::AppState;
+use base64::Engine as _;
+use tauri::State;
+use uuid::Uuid;
+
+#[tauri::command]
+pub async fn source_list(state: State<'_, AppState>) -> Result<Vec<SourceDto>, AppError> {
+    let sources = source_service::list_sources(&state.pool).await?;
+    Ok(sources.iter().map(SourceDto::from).collect())
+}
+
+#[tauri::command]
+pub async fn source_import_bytes(
+    state: State<'_, AppState>,
+    input: ImportBytesInput,
+) -> Result<JobDto, AppError> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(input.bytes_base64.trim())
+        .map_err(|error| AppError::InvalidInput(format!("invalid base64 payload: {error}")))?;
+    let ingest_input = IngestInput {
+        filename: input.filename,
+        bytes,
+        kind: SourceKind::File,
+        title: input.title,
+        uri: None,
+        mime_type: input.mime_type,
+    };
+    let state = state.inner().clone();
+    let jobs = state.jobs.clone();
+    let job = jobs
+        .start("source_ingestion", move |handle| async move {
+            IngestionService::new(&state)
+                .ingest_bytes(ingest_input, Some(&handle))
+                .await
+                .map(|_| ())
+        })
+        .await?;
+    Ok(JobDto::from(&job))
+}
+
+#[tauri::command]
+pub async fn source_import_files(
+    state: State<'_, AppState>,
+    input: ImportFilesInput,
+) -> Result<Vec<JobDto>, AppError> {
+    if input.paths.is_empty() {
+        return Err(AppError::InvalidInput(
+            "at least one file path is required".into(),
+        ));
+    }
+    let mut jobs = Vec::with_capacity(input.paths.len());
+    for (index, path) in input.paths.into_iter().enumerate() {
+        let filename = std::path::Path::new(&path)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("document")
+            .to_owned();
+        let title = input
+            .titles
+            .as_ref()
+            .and_then(|titles| titles.get(index))
+            .cloned();
+        let bytes = tokio::fs::read(&path).await?;
+        let state = state.inner().clone();
+        let ingest_input = IngestInput {
+            filename,
+            bytes,
+            kind: SourceKind::File,
+            title,
+            uri: None,
+            mime_type: None,
+        };
+        let job_manager = state.jobs.clone();
+        let job = job_manager
+            .start("source_ingestion", move |handle| async move {
+                IngestionService::new(&state)
+                    .ingest_bytes(ingest_input, Some(&handle))
+                    .await
+                    .map(|_| ())
+            })
+            .await?;
+        jobs.push(JobDto::from(&job));
+    }
+    Ok(jobs)
+}
+
+#[tauri::command]
+pub async fn source_import_url(
+    state: State<'_, AppState>,
+    input: ImportUrlInput,
+) -> Result<JobDto, AppError> {
+    let state = state.inner().clone();
+    let jobs = state.jobs.clone();
+    let job = jobs
+        .start("source_ingestion", move |handle| async move {
+            IngestionService::new(&state)
+                .ingest_url(&input.url, input.title, Some(&handle))
+                .await
+                .map(|_| ())
+        })
+        .await?;
+    Ok(JobDto::from(&job))
+}
+
+#[tauri::command]
+pub async fn source_delete(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
+    source_service::delete_source(&state.pool, id).await
+}
+
+#[tauri::command]
+pub async fn source_reindex(state: State<'_, AppState>, id: Uuid) -> Result<JobDto, AppError> {
+    source_service::get_source(&state.pool, id).await?;
+    let state = state.inner().clone();
+    let jobs = state.jobs.clone();
+    let job = jobs
+        .start("source_reindex", move |handle| async move {
+            IngestionService::new(&state)
+                .reindex_source(id, Some(&handle))
+                .await
+        })
+        .await?;
+    Ok(JobDto::from(&job))
+}
