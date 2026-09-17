@@ -62,6 +62,12 @@ was silently skipped.
 
 ---
 
+The window is the app's only chrome, so its geometry is a preference:
+`tauri-plugin-window-state` writes size, position and maximised state to
+`<appConfigDir>/.window-state.json` on a graceful close and restores it on
+launch. This was verified by seeding a size, launching, and reading the real
+window rect back through `GetWindowRect`.
+
 ## 2. Three layers of the product
 
 | Layer | Question it answers | Where it lives |

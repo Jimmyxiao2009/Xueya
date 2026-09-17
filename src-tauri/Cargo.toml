@@ -45,6 +45,7 @@ quick-xml = "0.37"
 keyring = "4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tauri-plugin-window-state = "2"
 
 [dev-dependencies]
 tempfile = "3"

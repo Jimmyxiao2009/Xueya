@@ -47,6 +47,9 @@ pub fn run() {
         .try_init();
 
     let result = tauri::Builder::default()
+        // The window is the app's only chrome, so its geometry is worth
+        // keeping: a learner who resizes it once should not have to again.
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             let handle = app.handle().clone();
             let state = tauri::async_runtime::block_on(bootstrap::build_state(&handle))?;
