@@ -21,6 +21,8 @@ pub struct Job {
     pub progress: f64,
     pub message: String,
     pub error_json: Option<String>,
+    /// Serialized artefact produced by the job (e.g. {"courseId": "…"}).
+    pub result_json: Option<String>,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,

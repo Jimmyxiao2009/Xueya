@@ -1,7 +1,7 @@
 use crate::ai::schemas::{Lesson, LessonCitation};
 use crate::domain::{
     Course, CourseNode, CourseNodeDependency, Job, KnowledgeObject, KnowledgeRelation,
-    ProviderConfig, Source,
+    ProviderConfig, RouteProgress, Source,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -228,20 +228,37 @@ pub struct CourseDto {
     pub title: String,
     pub description: String,
     pub status: String,
+    pub goal: Option<String>,
+    pub experience_level: Option<String>,
+    pub desired_depth: Option<String>,
+    pub kind: String,
+    pub current_node_id: Option<Uuid>,
+    pub seeded: bool,
+    pub node_count: i64,
+    pub completed_count: i64,
+    pub progress: f64,
+    pub metadata_json: String,
     pub created_at: String,
 }
 
-impl From<&Course> for CourseDto {
-    fn from(course: &Course) -> Self {
+impl CourseDto {
+    pub fn from_course(course: &Course, progress: &RouteProgress) -> Self {
         Self {
             id: course.id,
             topic: course.topic.clone(),
             title: course.title.clone(),
             description: course.description.clone(),
-            status: serde_json::to_value(course.status)
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .unwrap_or_else(|| "unknown".into()),
+            status: enum_name(&course.status, "unknown"),
+            goal: course.goal.clone(),
+            experience_level: course.experience_level.clone(),
+            desired_depth: course.desired_depth.clone(),
+            kind: course.kind.clone(),
+            current_node_id: progress.current_node_id.or(course.current_node_id),
+            seeded: course.seeded != 0,
+            node_count: progress.total,
+            completed_count: progress.completed,
+            progress: progress.ratio(),
+            metadata_json: course.metadata_json.clone(),
             created_at: course.created_at.to_rfc3339(),
         }
     }
@@ -258,6 +275,10 @@ pub struct CourseNodeDto {
     pub order_hint: i64,
     pub estimated_minutes: i64,
     pub status: String,
+    pub kind: String,
+    pub confidence: f64,
+    pub review_at: Option<String>,
+    pub generated_by: String,
     pub metadata_json: String,
 }
 
@@ -271,10 +292,11 @@ impl From<&CourseNode> for CourseNodeDto {
             objective: node.objective.clone(),
             order_hint: node.order_hint,
             estimated_minutes: node.estimated_minutes,
-            status: serde_json::to_value(node.status)
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .unwrap_or_else(|| "unknown".into()),
+            status: enum_name(&node.status, "unknown"),
+            kind: node.kind.clone(),
+            confidence: node.confidence,
+            review_at: node.review_at.map(|value| value.to_rfc3339()),
+            generated_by: node.generated_by.clone(),
             metadata_json: node.metadata_json.clone(),
         }
     }
@@ -308,6 +330,13 @@ pub struct CourseDetailDto {
 #[serde(rename_all = "camelCase")]
 pub struct CourseCreateInput {
     pub topic: String,
+    pub goal: Option<String>,
+    /// beginner | some_experience | advanced
+    pub experience_level: Option<String>,
+    /// overview | practical | deep
+    pub desired_depth: Option<String>,
+    #[serde(default)]
+    pub source_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,9 +356,38 @@ pub struct LessonDto {
     pub key_points: Vec<String>,
     pub diagnostic_question: String,
     pub citations: Vec<LessonCitationDto>,
+    pub steps: Vec<LessonStepDto>,
+    pub questions: Vec<QuizQuestionDto>,
+    pub mastery: f64,
+    pub estimated_minutes: i64,
+    pub node_kind: String,
+    /// `ai`, `mock` or `deterministic`. The UI shows this so a template is
+    /// never presented as a model answer.
+    pub generated_by: String,
+    pub has_evidence: bool,
 }
 
 impl LessonDto {
+    /// Build the full learning-screen payload from a prepared node.
+    pub fn from_prepared(
+        prepared: &crate::services::course_service::PreparedLesson,
+        node: &CourseNode,
+    ) -> Self {
+        let mut dto = Self::from_lesson(&prepared.lesson, &prepared.citations);
+        dto.steps = prepared.steps.iter().map(LessonStepDto::from).collect();
+        dto.questions = prepared
+            .questions
+            .iter()
+            .map(QuizQuestionDto::from)
+            .collect();
+        dto.mastery = prepared.mastery;
+        dto.estimated_minutes = node.estimated_minutes;
+        dto.node_kind = node.kind.clone();
+        dto.generated_by = prepared.generated_by.clone();
+        dto.has_evidence = !prepared.citations.is_empty();
+        dto
+    }
+
     pub fn from_lesson(lesson: &Lesson, chunks: &[crate::domain::Chunk]) -> Self {
         let citations = lesson
             .citations
@@ -352,6 +410,13 @@ impl LessonDto {
             key_points: lesson.key_points.clone(),
             diagnostic_question: lesson.diagnostic_question.clone(),
             citations,
+            steps: Vec::new(),
+            questions: Vec::new(),
+            mastery: 0.0,
+            estimated_minutes: 0,
+            node_kind: "lesson".to_owned(),
+            generated_by: "deterministic".to_owned(),
+            has_evidence: false,
         }
     }
 }
@@ -405,6 +470,7 @@ pub struct JobDto {
     pub progress: f64,
     pub message: String,
     pub error_json: Option<String>,
+    pub result_json: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
@@ -422,6 +488,7 @@ impl From<&Job> for JobDto {
             progress: job.progress,
             message: job.message.clone(),
             error_json: job.error_json.clone(),
+            result_json: job.result_json.clone(),
             created_at: job.created_at.to_rfc3339(),
             started_at: job.started_at.map(|value| value.to_rfc3339()),
             completed_at: job.completed_at.map(|value| value.to_rfc3339()),
@@ -440,4 +507,160 @@ pub fn lesson_citation_dtos(lesson: &Lesson) -> Vec<LessonCitationDto> {
             page_number: None,
         })
         .collect()
+}
+
+/// Serialize a `snake_case` enum through serde so DTO string values always match
+/// the TypeScript union types.
+pub fn enum_name<T: Serialize>(value: &T, fallback: &str) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LessonStepDto {
+    pub id: Uuid,
+    pub ordinal: i64,
+    pub title: String,
+    pub detail: String,
+    pub kind: String,
+    pub duration_label: String,
+}
+
+impl From<&crate::domain::LessonStep> for LessonStepDto {
+    fn from(step: &crate::domain::LessonStep) -> Self {
+        Self {
+            id: step.id,
+            ordinal: step.ordinal,
+            title: step.title.clone(),
+            detail: step.detail.clone(),
+            kind: step.kind.clone(),
+            duration_label: step.duration_label.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuizQuestionDto {
+    pub id: Uuid,
+    pub node_id: Uuid,
+    pub ordinal: i64,
+    pub kind: String,
+    pub prompt: String,
+    pub options: Vec<String>,
+    /// Never the raw answer key: the UI only learns it after submitting.
+    pub difficulty: f64,
+}
+
+impl From<&crate::domain::QuizQuestion> for QuizQuestionDto {
+    fn from(question: &crate::domain::QuizQuestion) -> Self {
+        Self {
+            id: question.id,
+            node_id: question.node_id,
+            ordinal: question.ordinal,
+            kind: question.kind.clone(),
+            prompt: question.prompt.clone(),
+            options: question.options(),
+            difficulty: question.difficulty,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuizSubmitInput {
+    pub question_id: Uuid,
+    pub answer: Vec<String>,
+    pub session_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuizResultDto {
+    pub question_id: Uuid,
+    pub node_id: Uuid,
+    pub correct: bool,
+    /// False when the widget needs a tutor; the UI must say so instead of
+    /// pretending the answer was graded.
+    pub graded: bool,
+    pub score: f64,
+    pub feedback: String,
+    pub expected: Vec<String>,
+    pub misconceptions: Vec<String>,
+    pub mastery: f64,
+    pub confidence: f64,
+    pub next_review: Option<String>,
+    /// Set when the answer triggered a roadmap change.
+    pub adaptation: Option<AdaptationEventDto>,
+    pub inserted_node_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearnerStateDto {
+    pub knowledge_point_id: Uuid,
+    pub title: String,
+    pub mastery: f64,
+    pub confidence: f64,
+    pub mistakes: i64,
+    pub attempts: i64,
+    pub last_seen: Option<String>,
+    pub next_review: Option<String>,
+    pub review_due: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdaptationEventDto {
+    pub id: Uuid,
+    pub course_id: Uuid,
+    pub node_id: Option<Uuid>,
+    pub kind: String,
+    pub reason: String,
+    pub payload_json: String,
+    pub created_at: String,
+}
+
+impl From<&crate::domain::AdaptationEvent> for AdaptationEventDto {
+    fn from(event: &crate::domain::AdaptationEvent) -> Self {
+        Self {
+            id: event.id,
+            course_id: event.course_id,
+            node_id: event.node_id,
+            kind: event.kind.clone(),
+            reason: event.reason.clone(),
+            payload_json: event.payload_json.clone(),
+            created_at: event.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TutorTurnInput {
+    pub session_id: Uuid,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TutorTurnDto {
+    pub message: String,
+    pub suggested_action: String,
+    pub diagnosis: Option<String>,
+    pub generated_by: String,
+    pub route_updated: bool,
+    pub adaptation: Option<AdaptationEventDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CourseNodeCompleteDto {
+    pub course: CourseDto,
+    pub completed_node_id: Uuid,
+    pub next_node_id: Option<Uuid>,
+    pub adaptation: Option<AdaptationEventDto>,
 }

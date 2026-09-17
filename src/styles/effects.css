@@ -1,0 +1,60 @@
+/* effects.css
+ * Ported verbatim from reference/Orbit_motion_continuous_swipe.html.
+ * Orbit's motion design is the product's signature: do not "clean this up"
+ * without re-checking the visual regression checklist in docs/DESIGN_SYSTEM.md.
+ */
+.scroll-pane,.page{min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.scroll-pane::-webkit-scrollbar,.page::-webkit-scrollbar{display:none}
+.acrylic{background:linear-gradient(125deg,#fffcf8d9,#f6f1e6ac);backdrop-filter:blur(27px) saturate(135%);-webkit-backdrop-filter:blur(27px) saturate(135%);border:1px solid #ffffffd9;box-shadow:0 7px 30px #57452c0c,inset 0 1px 0 #fff}
+/* The header unfolds into one acrylic management layer. */
+.dialog.roadmap-layer{position:fixed;inset:calc(12px + env(safe-area-inset-top)) 13px auto;max-width:454px;width:calc(100% - 26px);max-height:calc(100dvh - 44px - env(safe-area-inset-top) - env(safe-area-inset-bottom));margin:0 auto;border-radius:25px;border:1px solid #ffffffe0;padding:18px 19px 16px;overflow:hidden;background:linear-gradient(135deg,#fffdf6ed,#f5eee1e0);box-shadow:0 22px 80px #48392226;transform-origin:top center}
+.header-blur{position:absolute;inset:0 0 -48px;pointer-events:none}
+.header-blur::after{content:'';position:absolute;inset:0;background:linear-gradient(to bottom,rgba(248,247,244,.86) 0%,rgba(248,247,244,.55) 38%,rgba(248,247,244,.18) 70%,rgba(248,247,244,0) 100%)}
+.header-blur>i{position:absolute;inset:0;backdrop-filter:blur(var(--blur));-webkit-backdrop-filter:blur(var(--blur));mask-image:linear-gradient(to bottom,#000 0%,#000 var(--from),transparent var(--to));-webkit-mask-image:linear-gradient(to bottom,#000 0%,#000 var(--from),transparent var(--to))}
+.header-blur>i:nth-child(1){--blur:2px;--from:72%;--to:100%}
+.header-blur>i:nth-child(2){--blur:4px;--from:54%;--to:88%}
+.header-blur>i:nth-child(3){--blur:8px;--from:36%;--to:72%}
+.header-blur>i:nth-child(4){--blur:16px;--from:18%;--to:55%}
+.header-blur>i:nth-child(5){--blur:28px;--from:0%;--to:38%}
+/* Keep the roadmap visible while its selected course opens into a full screen. */
+.lesson-underlay,.lesson-opening{position:absolute;inset:0;display:flex;flex-direction:column;min-height:0;overflow:hidden;background:var(--bg);transform-origin:center center}
+.lesson-underlay{z-index:25;pointer-events:none}
+.lesson-underlay *{pointer-events:none!important}
+.lesson-opening{z-index:26;will-change:clip-path}
+.lesson-opening .todo{animation:none}
+/* Progressive glass at the reading edges; text itself is never blurred. */
+.soft-blur{position:absolute;inset:0 0 -32px;pointer-events:none;z-index:0}
+.soft-blur::after{content:'';position:absolute;inset:0;background:linear-gradient(to bottom,rgba(248,247,244,.88),rgba(248,247,244,.62) 45%,rgba(248,247,244,.18) 78%,transparent)}
+.soft-blur>i{position:absolute;inset:0;backdrop-filter:blur(var(--blur));-webkit-backdrop-filter:blur(var(--blur));mask-image:linear-gradient(to bottom,#000 var(--from),transparent var(--to));-webkit-mask-image:linear-gradient(to bottom,#000 var(--from),transparent var(--to))}
+.soft-blur>i:nth-child(1){--blur:2px;--from:76%;--to:100%}
+.soft-blur>i:nth-child(2){--blur:4px;--from:62%;--to:92%}
+.soft-blur>i:nth-child(3){--blur:8px;--from:48%;--to:82%}
+.soft-blur>i:nth-child(4){--blur:14px;--from:32%;--to:70%}
+.soft-blur>i:nth-child(5){--blur:22px;--from:15%;--to:58%}
+.soft-blur-bottom{inset:-32px 0 0;transform:scaleY(-1)}
+.chat-header>.soft-blur,.learning-plan>.soft-blur{left:-20px;right:-20px}
+.chat-header>.soft-blur{bottom:0}
+.chat-header>:not(.soft-blur),.learning-plan>:not(.soft-blur),.compact-top>:not(.soft-blur),.composer-wrap>:not(.soft-blur),.lesson-dock>:not(.soft-blur){position:relative;z-index:1}
+.swipe-settled .stop{animation:none}
+.swipe-settled .todo{animation:idle-tile 8s 1s ease-in-out infinite}
+/* Sliding and returning never replay a second content entrance. */
+.swipe-settled .stop,.swipe-settled .path,.swipe-settled .resource,.swipe-settled .source-card,.settled-notice{animation:none}
+.swipe-settled .node.done .icon{animation:none;stroke-dashoffset:0}
+/* Keep progressive blur with three passes instead of five overlapping passes. */
+.header-blur>i:nth-child(1),.soft-blur>i:nth-child(1){--blur:2px;--from:66%;--to:100%}
+.header-blur>i:nth-child(2),.soft-blur>i:nth-child(2){--blur:7px;--from:32%;--to:80%}
+.header-blur>i:nth-child(3),.soft-blur>i:nth-child(3){--blur:18px;--from:0%;--to:54%}
+/* The real adjacent page is visible while dragging and is adopted on release. */
+.swipe-preview-stage{position:absolute;z-index:1;overflow:hidden;pointer-events:none;contain:layout paint}
+.swipe-preview-stage *{pointer-events:none!important}
+.swipe-preview-stage>.home-page,.swipe-preview-stage>.lesson-content{will-change:transform}
+/* Motion pass v2 — calmer navigation, focused rewards, lighter compositing during transitions. */
+.motion-lite .header-blur>i,.motion-lite .soft-blur>i{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+.motion-lite .header-blur::after{background:linear-gradient(to bottom,rgba(248,247,244,.94),rgba(248,247,244,.62) 52%,rgba(248,247,244,0))}
+/* Motion pass 2 · weighted swipe physics */
+#swipe-zone.is-dragging .home-page,
+#swipe-zone.is-dragging .lesson-content,
+.swipe-preview-stage > .home-page,
+.swipe-preview-stage > .lesson-content{transform-origin:center center}
+.swipe-landing{will-change:transform}
+

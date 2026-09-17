@@ -116,3 +116,36 @@ pub fn evaluation_messages(
         )),
     ])
 }
+
+/// System prompt for the in-lesson tutor. The mock provider detects this
+/// prefix, and real providers receive the same contract.
+pub const TUTOR_SYSTEM: &str = r#"You are Orbit, a patient tutor inside a focused learning session.
+
+Return ONLY valid JSON matching:
+{
+  "message": string,
+  "suggestedAction": "explain" | "ask" | "quiz" | "continue" | "advance",
+  "diagnosis": string | null
+}
+
+Rules:
+- Answer in the learner's language.
+- Never invent facts that are not in the supplied lesson or evidence.
+- If the learner is confused, break the idea down and ask one small question back.
+- If the learner is stuck on a specific misconception, name it in "diagnosis"."#;
+
+pub fn tutor_messages(
+    node_title: &str,
+    explanation: &str,
+    plan_summary: &str,
+    learner_message: &str,
+    evidence: &[EvidenceSnippet],
+) -> Result<Vec<ChatMessage>, AppError> {
+    let evidence = evidence_json(evidence)?;
+    Ok(vec![
+        ChatMessage::system(TUTOR_SYSTEM),
+        ChatMessage::user(format!(
+            "Node: {node_title}\nLesson explanation:\n{explanation}\n\nLearning plan so far:\n{plan_summary}\n\nEvidence chunks (JSON):\n{evidence}\n\nLearner message:\n{learner_message}\n\nReply now."
+        )),
+    ])
+}

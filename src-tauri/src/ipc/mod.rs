@@ -5,6 +5,8 @@ pub mod jobs;
 pub mod knowledge;
 pub mod learning;
 pub mod providers;
+pub mod quiz;
 pub mod search;
 pub mod settings;
 pub mod sources;
+pub mod tutor;

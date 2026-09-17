@@ -1,0 +1,11 @@
+import fs from "node:fs";
+let p = "src/services/quiz_service.rs";
+let s = fs.readFileSync(p, "utf8");
+s = s.replace("            Ok(value) => sanitize_evaluation(value),", "            Ok(value) => sanitize_evaluation(value)?,");
+fs.writeFileSync(p, s);
+p = "src/ipc/courses.rs";
+s = fs.readFileSync(p, "utf8");
+s = s.replace(`    let node = course_repo::get_node(&state.pool, node_id).await?;
+    let course = CourseService::new(&state).complete_node(node_id).await?;`, `    let course = CourseService::new(&state).complete_node(node_id).await?;`);
+fs.writeFileSync(p, s);
+console.log("ok");

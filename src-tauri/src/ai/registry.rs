@@ -1,3 +1,4 @@
+use super::mock::{MockProvider, MOCK_MODEL};
 use super::openai_compatible::OpenAiCompatibleProvider;
 use super::traits::{ChatProvider, EmbeddingProvider};
 use crate::db::repo::providers as provider_repo;
@@ -129,24 +130,50 @@ impl ProviderRegistry {
         )))
     }
 
+    /// The provider used for real work.
+    ///
+    /// Falls back to [`MockProvider`] when nothing is configured or the stored
+    /// key is missing, so that a fresh install is a *working* install. The
+    /// caller can tell the two apart with [`is_mock_config`].
     pub async fn default_chat_provider(
         &self,
     ) -> Result<(ProviderConfig, Arc<dyn ChatProvider>), AppError> {
-        let provider = provider_repo::first_enabled_provider(&self.pool)
-            .await?
-            .ok_or_else(|| AppError::NotFound("no enabled AI provider configured".into()))?;
-        let chat = self.chat_provider(&provider).await?;
-        Ok((provider, chat))
+        match provider_repo::first_enabled_provider(&self.pool).await? {
+            None => Ok((mock_config(), Arc::new(MockProvider::new()))),
+            Some(provider) => match self.chat_provider(&provider).await {
+                Ok(chat) => Ok((provider, chat)),
+                Err(AppError::ProviderAuth) => {
+                    tracing::warn!(
+                        provider = %provider.id,
+                        "provider has no usable API key; using the offline mock provider"
+                    );
+                    Ok((mock_config(), Arc::new(MockProvider::new())))
+                }
+                Err(error) => Err(error),
+            },
+        }
     }
 
     pub async fn default_embedding_provider(
         &self,
     ) -> Result<(ProviderConfig, Arc<dyn EmbeddingProvider>), AppError> {
-        let provider = provider_repo::first_enabled_provider(&self.pool)
-            .await?
-            .ok_or_else(|| AppError::NotFound("no enabled AI provider configured".into()))?;
-        let embedding = self.embedding_provider(&provider).await?;
-        Ok((provider, embedding))
+        match provider_repo::first_enabled_provider(&self.pool).await? {
+            None => Ok((mock_config(), Arc::new(MockProvider::new()))),
+            Some(provider) => match self.embedding_provider(&provider).await {
+                Ok(embedding) => Ok((provider, embedding)),
+                Err(AppError::ProviderAuth) => Ok((mock_config(), Arc::new(MockProvider::new()))),
+                Err(error) => Err(error),
+            },
+        }
+    }
+
+    /// True when the returned config is the offline stand-in.
+    pub async fn is_mock_active(&self) -> Result<bool, AppError> {
+        let provider = provider_repo::first_enabled_provider(&self.pool).await?;
+        match provider {
+            None => Ok(true),
+            Some(provider) => Ok(self.api_key(&provider).await.is_err()),
+        }
     }
 
     async fn api_key(&self, provider: &ProviderConfig) -> Result<String, AppError> {
@@ -184,4 +211,25 @@ fn validate_provider_input(input: &ProviderUpsert) -> Result<(), AppError> {
         return Err(AppError::InvalidInput("embedding model is required".into()));
     }
     Ok(())
+}
+
+/// A synthetic provider record for the offline stand-in. Nothing is ever sent
+/// to `baseUrl`; the scheme makes that obvious in logs and in the UI.
+pub fn mock_config() -> ProviderConfig {
+    let now = utc_now();
+    ProviderConfig {
+        id: Uuid::nil(),
+        display_name: "Offline Mock".to_owned(),
+        base_url: "mock://local".to_owned(),
+        chat_model: MOCK_MODEL.to_owned(),
+        embedding_model: MOCK_MODEL.to_owned(),
+        api_key_ref: None,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+pub fn is_mock_config(provider: &ProviderConfig) -> bool {
+    provider.base_url.starts_with("mock://")
 }

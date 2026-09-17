@@ -94,6 +94,7 @@ impl JobManager {
             progress: 0.0,
             message: "Queued".into(),
             error_json: None,
+            result_json: None,
             created_at: utc_now(),
             started_at: None,
             completed_at: None,

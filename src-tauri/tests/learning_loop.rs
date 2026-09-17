@@ -1,0 +1,361 @@
+//! End-to-end checks for the learning loop that the prototype faked:
+//! create a route -> open a node -> answer a question -> the route adapts.
+
+use std::sync::Arc;
+use tempfile::TempDir;
+use uuid::Uuid;
+use verruckt_lib::bootstrap;
+use verruckt_lib::db::repo::{courses as course_repo, learning_loop as loop_repo};
+use verruckt_lib::domain::{CourseNodeStatus, NodeKind, QuizKind};
+use verruckt_lib::secrets::keyring_store::InMemorySecretStore;
+use verruckt_lib::services::course_service::{CourseService, RouteRequest};
+use verruckt_lib::services::quiz_service::QuizService;
+use verruckt_lib::state::{AppPaths, AppState};
+
+async fn test_state() -> (AppState, TempDir) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = AppState::new_with_secrets(
+        AppPaths::new(dir.path()),
+        Arc::new(InMemorySecretStore::new()),
+    )
+    .await
+    .expect("app state");
+    (state, dir)
+}
+
+async fn create_route(state: &AppState, topic: &str) -> Uuid {
+    CourseService::new(state)
+        .create_course(RouteRequest::new(topic), None)
+        .await
+        .expect("route")
+        .id
+}
+
+#[tokio::test]
+async fn first_launch_ships_both_prototype_routes() {
+    let (state, _dir) = test_state().await;
+    bootstrap::seed_demo_routes(&state).await.expect("seed");
+
+    let courses = course_repo::list_courses(&state.pool).await.expect("list");
+    assert_eq!(courses.len(), 2);
+    assert_eq!(courses[0].topic, "射影几何");
+    assert_eq!(courses[1].topic, "线性代数");
+    assert!(courses.iter().all(|course| course.seeded == 1));
+    assert_eq!(courses[0].kind, "geometry");
+    assert_eq!(courses[1].kind, "algebra");
+
+    // Seeding is idempotent: a second launch must not duplicate the demo data.
+    bootstrap::seed_demo_routes(&state)
+        .await
+        .expect("seed again");
+    assert_eq!(
+        course_repo::count_courses(&state.pool)
+            .await
+            .expect("count"),
+        2
+    );
+}
+
+#[tokio::test]
+async fn seeded_route_opens_with_one_completed_node() {
+    let (state, _dir) = test_state().await;
+    bootstrap::seed_demo_routes(&state).await.expect("seed");
+    let courses = course_repo::list_courses(&state.pool).await.expect("list");
+    let nodes = course_repo::list_nodes(&state.pool, courses[0].id)
+        .await
+        .expect("nodes");
+
+    assert_eq!(nodes[0].status, CourseNodeStatus::Completed);
+    assert_eq!(nodes[1].status, CourseNodeStatus::Available);
+    assert_eq!(nodes[2].status, CourseNodeStatus::Locked);
+
+    let progress = course_repo::progress_for_course(&state.pool, courses[0].id)
+        .await
+        .expect("progress");
+    assert_eq!(progress.total, 6);
+    assert_eq!(progress.completed, 1);
+    assert_eq!(progress.current_node_id, Some(nodes[1].id));
+}
+
+#[tokio::test]
+async fn a_new_route_is_a_full_plan_not_a_stub() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "线性代数").await;
+
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+    assert_eq!(nodes.len(), 6);
+    assert_eq!(nodes[0].kind, NodeKind::Lesson.as_str());
+    assert_eq!(nodes[2].kind, NodeKind::Review.as_str());
+    assert_eq!(nodes[4].kind, NodeKind::Quiz.as_str());
+    assert_eq!(nodes[0].status, CourseNodeStatus::Available);
+    assert!(nodes
+        .iter()
+        .skip(1)
+        .all(|node| node.status == CourseNodeStatus::Locked));
+    assert!(nodes.iter().all(|node| !node.generated_by.is_empty()));
+
+    // A linear chain of prerequisites, so unlocking is deterministic.
+    let dependencies = course_repo::list_dependencies(&state.pool, course_id)
+        .await
+        .expect("deps");
+    assert_eq!(dependencies.len(), nodes.len() - 1);
+    for pair in nodes.windows(2) {
+        assert!(dependencies
+            .iter()
+            .any(|dep| dep.node_id == pair[1].id && dep.depends_on_node_id == pair[0].id));
+    }
+
+    // Every node carries its lesson plan and its question set.
+    for node in &nodes {
+        let steps = loop_repo::list_lesson_steps(&state.pool, node.id)
+            .await
+            .expect("steps");
+        assert!(!steps.is_empty(), "node {} has no lesson steps", node.title);
+        let questions = loop_repo::list_quiz_questions(&state.pool, node.id)
+            .await
+            .expect("questions");
+        assert!(
+            !questions.is_empty(),
+            "node {} has no questions",
+            node.title
+        );
+    }
+
+    let points = loop_repo::list_knowledge_points(&state.pool, course_id)
+        .await
+        .expect("points");
+    assert_eq!(points.len(), nodes.len());
+}
+
+#[tokio::test]
+async fn opening_a_node_returns_a_usable_lesson_without_any_api_key() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "射影几何").await;
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+
+    let prepared = CourseService::new(&state)
+        .prepare_node(nodes[0].id, None)
+        .await
+        .expect("lesson");
+
+    assert!(!prepared.lesson.title.is_empty());
+    assert!(!prepared.lesson.explanation.is_empty());
+    assert!(!prepared.lesson.key_points.is_empty());
+    assert!(!prepared.steps.is_empty());
+    assert!(!prepared.questions.is_empty());
+    assert_eq!(prepared.generated_by, "deterministic");
+    assert!(prepared.mastery < 0.001);
+}
+
+#[tokio::test]
+async fn a_wrong_answer_updates_the_learner_model_and_inserts_practice() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "射影几何").await;
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+    let node = nodes[0].clone();
+
+    let questions = loop_repo::list_quiz_questions(&state.pool, node.id)
+        .await
+        .expect("questions");
+    let objective = questions
+        .iter()
+        .find(|question| question.kind() == QuizKind::Single)
+        .expect("a locally gradable question")
+        .clone();
+    let expected = objective.expected();
+    let wrong = objective
+        .options()
+        .into_iter()
+        .find(|option| !expected.contains(option))
+        .expect("a distractor");
+
+    let outcome = QuizService::new(&state)
+        .submit(objective.id, vec![wrong], None)
+        .await
+        .expect("submit");
+
+    assert!(!outcome.grade.correct);
+    assert!(outcome.grade.graded);
+    assert!(outcome.mastery < 0.5);
+    assert!(outcome.next_review.is_some());
+    assert!(outcome.adaptation.is_some());
+
+    // The prototype inserted a "加练 · …" node in front of the learner; so do we.
+    let inserted = outcome.inserted_node_id.expect("review node");
+    let review = course_repo::get_node(&state.pool, inserted)
+        .await
+        .expect("node");
+    assert_eq!(review.kind, NodeKind::Review.as_str());
+    assert!(review.title.starts_with("加练 · "));
+    assert_eq!(review.order_hint, node.order_hint + 1);
+
+    let states = loop_repo::list_learner_states(&state.pool, course_id)
+        .await
+        .expect("states");
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].mistakes, 1);
+    assert_eq!(states[0].attempts, 1);
+    assert!(states[0].next_review.is_some());
+
+    // Answering the same wrong thing twice must not spam the roadmap.
+    let again = QuizService::new(&state)
+        .submit(objective.id, vec!["这不是一个选项".to_owned()], None)
+        .await
+        .expect("submit again");
+    assert!(again.inserted_node_id.is_none());
+    let adaptations = loop_repo::list_adaptations(&state.pool, course_id, 50)
+        .await
+        .expect("adaptations");
+    assert_eq!(
+        adaptations
+            .iter()
+            .filter(|event| event.kind == "review_inserted")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_correct_answer_does_not_touch_the_roadmap() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "射影几何").await;
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+
+    let questions = loop_repo::list_quiz_questions(&state.pool, nodes[0].id)
+        .await
+        .expect("questions");
+    let objective = questions
+        .iter()
+        .find(|question| question.kind() == QuizKind::Single)
+        .expect("question")
+        .clone();
+
+    let outcome = QuizService::new(&state)
+        .submit(objective.id, objective.expected(), None)
+        .await
+        .expect("submit");
+
+    assert!(outcome.grade.correct);
+    assert!(outcome.inserted_node_id.is_none());
+    assert!(outcome.adaptation.is_none());
+    // One right answer nudges mastery, it does not max it out.
+    assert!(outcome.mastery > 0.2 && outcome.mastery < 0.6);
+
+    let after = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+    assert_eq!(after.len(), nodes.len());
+}
+
+#[tokio::test]
+async fn finishing_a_node_unlocks_the_next_one() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "射影几何").await;
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+
+    let course = CourseService::new(&state)
+        .complete_node(nodes[0].id)
+        .await
+        .expect("complete");
+    assert_eq!(course.current_node_id, Some(nodes[1].id));
+
+    let after = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+    assert_eq!(after[0].status, CourseNodeStatus::Completed);
+    assert_eq!(after[1].status, CourseNodeStatus::Available);
+    assert_eq!(after[2].status, CourseNodeStatus::Locked);
+
+    let progress = course_repo::progress_for_course(&state.pool, course_id)
+        .await
+        .expect("progress");
+    assert!((progress.ratio() - 1.0 / 6.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn depth_and_experience_change_the_plan() {
+    let (state, _dir) = test_state().await;
+
+    let mut deep = RouteRequest::new("射影几何");
+    deep.desired_depth = Some("deep".to_owned());
+    let deep_course = CourseService::new(&state)
+        .create_course(deep, None)
+        .await
+        .expect("deep route");
+    let deep_nodes = course_repo::list_nodes(&state.pool, deep_course.id)
+        .await
+        .expect("nodes");
+    assert!(deep_nodes.len() > 6);
+
+    let mut advanced = RouteRequest::new("线性代数");
+    advanced.experience_level = Some("advanced".to_owned());
+    let advanced_course = CourseService::new(&state)
+        .create_course(advanced, None)
+        .await
+        .expect("advanced route");
+    let advanced_nodes = course_repo::list_nodes(&state.pool, advanced_course.id)
+        .await
+        .expect("nodes");
+    assert!(advanced_nodes.len() < 6);
+    assert_eq!(advanced_nodes[0].status, CourseNodeStatus::Available);
+}
+
+#[tokio::test]
+async fn deleting_a_route_removes_its_nodes() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "射影几何").await;
+    CourseService::new(&state)
+        .delete_course(course_id)
+        .await
+        .expect("delete");
+    assert!(course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes")
+        .is_empty());
+    assert_eq!(
+        course_repo::count_courses(&state.pool)
+            .await
+            .expect("count"),
+        0
+    );
+}
+
+#[tokio::test]
+async fn every_question_kind_survives_the_migration() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "射影几何").await;
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+    let questions = loop_repo::list_quiz_questions(&state.pool, nodes[0].id)
+        .await
+        .expect("questions");
+
+    // The prototype's five widget types must all survive the migration.
+    let kinds: Vec<String> = questions
+        .iter()
+        .map(|question| question.kind.clone())
+        .collect();
+    for expected in ["single", "multi", "fill", "short", "image"] {
+        assert!(kinds.contains(&expected.to_owned()), "missing {expected}");
+    }
+
+    for question in &questions {
+        let empty = QuizService::new(&state)
+            .submit(question.id, Vec::new(), None)
+            .await
+            .expect("submit empty");
+        assert!(!empty.grade.correct);
+        assert!(!empty.grade.feedback.is_empty());
+    }
+}

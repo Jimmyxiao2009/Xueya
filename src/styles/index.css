@@ -1,0 +1,76 @@
+/* Orbit / Verruckt global stylesheet
+ * ---------------------------------------------------------------------------
+ * Layer order is declared explicitly so that:
+ *   theme  < base < components (ported Orbit design layer) < utilities (Tailwind)
+ * Tailwind's preflight is intentionally NOT imported: Orbit ships its own
+ * reset in `components.css`, and replacing it would silently change spacing,
+ * heading metrics and button behaviour across the whole product.
+ */
+
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@import "./tokens.css" layer(base);
+@import "./components.css" layer(components);
+@import "./effects.css" layer(components);
+@import "./motion.css" layer(components);
+
+@theme {
+  /* Palette — keep in sync with src/styles/tokens.css */
+  --color-canvas: #f8f7f4;
+  --color-paper: #fffefa;
+  --color-primary: #302e2a;
+  --color-muted: #7e7a72;
+  --color-subtle: #e8e4dc;
+  --color-line: #e8e4dc;
+  --color-accent: #b65f41;
+  --color-success: #587454;
+  --color-review: #78638e;
+  --color-quiz: #a67635;
+  --color-canvas-deep: #eae7e0;
+  --color-ink-strong: #34312b;
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  --font-display: "Iowan Old Style", "Palatino Linotype", "Songti SC", "STSong",
+    serif;
+  --font-numeric: Georgia, serif;
+
+  /* Radii */
+  --radius-xs: 8px;
+  --radius-sm: 12px;
+  --radius-md: 14px;
+  --radius-lg: 17px;
+  --radius-xl: 19px;
+  --radius-2xl: 24px;
+
+  /* Shadows */
+  --shadow-panel: 0 4px 18px #84604408;
+  --shadow-float: 0 5px 0 #1e1b16, 0 10px 35px #27231c22;
+  --shadow-device: 0 0 70px #443a2910;
+
+  /* Motion */
+  --ease-spring: cubic-bezier(0.22, 1.12, 0.36, 1);
+  --ease-out-soft: cubic-bezier(0.22, 0.8, 0.3, 1);
+  --ease-settle: cubic-bezier(0.14, 0.68, 0.16, 1);
+
+  /* Layout */
+  --container-content: 480px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* Tailwind utilities live in a later layer than the ported design layer, so a
+ * utility class always wins over a component class with the same specificity.
+ * This helper keeps the Orbit device frame centred in a desktop Tauri window. */
+.orbit-device {
+  max-width: var(--content-width);
+  margin-inline: auto;
+}

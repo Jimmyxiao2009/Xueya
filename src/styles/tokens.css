@@ -1,0 +1,92 @@
+/* Orbit design tokens
+ * ---------------------------------------------------------------------------
+ * These are the CSS custom properties the ported design layer
+ * (components.css / effects.css / motion.css) consumes.
+ *
+ * The palette values are the *same* literals declared in `@theme` inside
+ * `src/styles/index.css`, which is what Tailwind utilities read. When you
+ * change a colour, change it in both files and update docs/DESIGN_SYSTEM.md.
+ *
+ * Colour names map to Tailwind utilities like this:
+ *   --color-canvas  -> bg-canvas        --color-primary -> text-primary
+ *   --color-paper   -> bg-paper         --color-muted   -> text-muted
+ *   --color-subtle  -> border-subtle    --color-accent  -> text-accent/bg-accent
+ *   --color-success -> text-success     --color-review  -> text-review
+ *   --color-quiz    -> text-quiz
+ */
+
+:root {
+  color-scheme: light;
+
+  /* ---- Core palette (frozen from the Orbit prototype) ---- */
+  --bg: #f8f7f4;
+  --panel: #fffefa;
+  --text: #302e2a;
+  --muted: #7e7a72;
+  --line: #e8e4dc;
+  --accent: #b65f41;
+  --green: #b65f41;
+  --purple: #78638e;
+  --orange: #a67635;
+  --success: #587454;
+
+  /* ---- Derived surfaces ---- */
+  --paper-strong: #fffdf8;
+  --canvas-deep: #eae7e0;
+  --warm-gray: #716b61;
+  --warm-gray-soft: #969086;
+  --warm-shadow: #443a29;
+  --bar-track: #eeeae3;
+  --bar-fill: #c98166;
+  --node-face: #d7d0c4;
+
+  /* ---- Radii ---- */
+  --r-xs: 8px;
+  --r-sm: 12px;
+  --r-md: 14px;
+  --r-lg: 17px;
+  --r-xl: 19px;
+  --r-2xl: 24px;
+  --r-pill: 999px;
+
+  /* ---- Shadows ---- */
+  --shadow-panel: 0 4px 18px #84604408;
+  --shadow-float: 0 5px 0 #1e1b16, 0 10px 35px #27231c22;
+  --shadow-press: 0 1px 0 #151410;
+  --shadow-device: 0 0 70px #443a2910;
+
+  /* ---- Motion ---- */
+  --spring: cubic-bezier(0.22, 1.12, 0.36, 1);
+  --ease-out-soft: cubic-bezier(0.22, 0.8, 0.3, 1);
+  --ease-in-out-soft: cubic-bezier(0.2, 0.6, 0.3, 1);
+  --ease-settle: cubic-bezier(0.14, 0.68, 0.16, 1);
+  --dur-press: 85ms;
+  --dur-fast: 210ms;
+  --dur-base: 340ms;
+  --dur-slow: 470ms;
+  --dur-settle: 720ms;
+
+  /* ---- Stacking ---- */
+  --z-sticky: 8;
+  --z-overlay: 10;
+  --z-dialog: 20;
+  --z-toast: 40;
+
+  /* ---- Layout ---- */
+  --content-width: 480px;
+  --keyboard-inset: 0px;
+
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  font-synthesis: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-press: 0ms;
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+    --dur-settle: 0ms;
+  }
+}

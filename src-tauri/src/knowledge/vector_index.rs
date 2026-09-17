@@ -37,9 +37,12 @@ pub trait VectorIndex: Send + Sync {
     async fn rebuild(&self) -> Result<(), AppError>;
 }
 
+type EmbeddingCacheKey = (Uuid, Uuid, String);
+type EmbeddingCache = Arc<RwLock<HashMap<EmbeddingCacheKey, EmbeddingRecord>>>;
+
 pub struct SqliteVectorIndex {
     pool: SqlitePool,
-    cache: Arc<RwLock<HashMap<(Uuid, Uuid, String), EmbeddingRecord>>>,
+    cache: EmbeddingCache,
     loaded: AtomicBool,
 }
 

@@ -88,6 +88,6 @@ mod tests {
         let id = Uuid::new_v4();
         let path = VirtualPath::parse(&format!("/Courses/{id}/Nodes")).expect("parse");
         assert_eq!(path, VirtualPath::CourseNodes(id));
-        assert_eq!(VirtualPath::parse("../../etc").is_err(), true);
+        assert!(VirtualPath::parse("../../etc").is_err());
     }
 }

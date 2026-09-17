@@ -36,6 +36,7 @@ impl HeadingAwareChunker {
         value.trim().trim_start_matches('#').trim().to_owned()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn flush_segment(
         chunks: &mut Vec<Chunk>,
         document_id: Uuid,

@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod bootstrap;
+pub mod curriculum;
 pub mod db;
 pub mod domain;
 pub mod error;
@@ -18,19 +19,21 @@ pub mod util;
 use ipc::{
     app::{app_bootstrap, app_get_info},
     courses::{
-        course_create, course_delete, course_get, course_list, course_node_get,
-        course_node_prepare, course_regenerate,
+        course_adaptations, course_create, course_delete, course_get, course_learner_states,
+        course_list, course_node_complete, course_node_get, course_node_prepare, course_regenerate,
     },
     jobs::{job_cancel, job_get, job_list, job_subscribe},
     knowledge::{knowledge_get_object, knowledge_get_related, knowledge_search},
     learning::{learning_finish, learning_respond, learning_start},
     providers::{provider_delete, provider_list, provider_test, provider_upsert},
+    quiz::{quiz_list, quiz_submit},
     search::search_web,
     settings::{settings_get, settings_update},
     sources::{
         source_delete, source_import_bytes, source_import_files, source_import_url, source_list,
         source_reindex,
     },
+    tutor::tutor_send,
 };
 use tauri::Manager;
 
@@ -47,6 +50,10 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             let state = tauri::async_runtime::block_on(bootstrap::build_state(&handle))?;
+            if let Err(error) = tauri::async_runtime::block_on(bootstrap::seed_demo_routes(&state))
+            {
+                tracing::warn!(%error, "could not seed the demo routes");
+            }
             app.manage(state);
             Ok(())
         })
@@ -76,6 +83,12 @@ pub fn run() {
             course_regenerate,
             course_node_get,
             course_node_prepare,
+            course_node_complete,
+            course_learner_states,
+            course_adaptations,
+            quiz_list,
+            quiz_submit,
+            tutor_send,
             learning_start,
             learning_respond,
             learning_finish,
