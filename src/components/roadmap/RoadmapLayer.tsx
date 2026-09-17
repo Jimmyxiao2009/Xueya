@@ -15,6 +15,9 @@ interface RoadmapLayerProps {
   onSelect: (routeId: string) => void;
   onDelete: (routeId: string) => void;
   onCreate: () => void;
+  onOpenSources: () => void;
+  onOpenSettings: () => void;
+  sourceCount: number;
 }
 
 /**
@@ -31,6 +34,9 @@ export function RoadmapLayer({
   onSelect,
   onDelete,
   onCreate,
+  onOpenSources,
+  onOpenSettings,
+  sourceCount,
 }: RoadmapLayerProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const [pendingDelete, setPendingDelete] = useState<LearningRoute | null>(null);
@@ -166,6 +172,27 @@ export function RoadmapLayer({
                 </div>
               );
             })}
+          </div>
+          <div className="layer-label">更多</div>
+          <div className="flex gap-3">
+            <button
+              className="flex flex-1 items-center gap-2 rounded-lg border border-subtle bg-paper px-4 py-3 text-sm text-primary"
+              onClick={onOpenSources}
+              data-motion="menu"
+            >
+              <Icon name="book" />
+              <span>资料库</span>
+              <span className="ml-auto text-muted">{sourceCount}</span>
+            </button>
+            <button
+              className="flex flex-1 items-center gap-2 rounded-lg border border-subtle bg-paper px-4 py-3 text-sm text-primary"
+              onClick={onOpenSettings}
+              data-motion="menu"
+            >
+              <Icon name="spark" />
+              <span>设置</span>
+              <Icon name="chevron" className="ml-auto text-muted" />
+            </button>
           </div>
         </div>
         <button className="add-unknown" onClick={onCreate} data-motion="menu">

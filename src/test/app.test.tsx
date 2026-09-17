@@ -275,3 +275,80 @@ describe("route creation", () => {
     expect(backend.calls).toContain("job_get");
   });
 });
+
+describe("management layer", () => {
+  async function openLayer() {
+    await clickAsync(document.querySelector(".subject-switch"));
+    await waitFor(() => expect(document.querySelector(".roadmap-layer")).toBeTruthy());
+  }
+
+  function layerButton(label: string): HTMLButtonElement {
+    const found = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".roadmap-layer button"),
+    ).find((button) => button.textContent?.includes(label));
+    expect(found, `layer button "${label}"`).toBeTruthy();
+    return found as HTMLButtonElement;
+  }
+
+  it("saves a BYOK provider and never echoes the key back to the UI", async () => {
+    mountApp();
+    await boot();
+    await openLayer();
+
+    await clickAsync(layerButton("设置"));
+    await waitFor(() => expect(document.querySelector("#provider-form")).toBeTruthy());
+
+    const set = (selector: string, value: string) => {
+      const field = document.querySelector(selector) as HTMLInputElement;
+      expect(field).toBeTruthy();
+      fireEvent.change(field, { target: { value } });
+    };
+    await act(async () => {
+      set("#provider-name", "我的 OpenAI");
+      set("#provider-base", "https://api.example.com/v1");
+      set("#provider-chat", "gpt-4o-mini");
+      set("#provider-key", "sk-secret-value");
+    });
+
+    await act(async () => {
+      fireEvent.submit(document.querySelector("#provider-form") as HTMLFormElement);
+      await new Promise((resolve) => window.setTimeout(resolve, 60));
+    });
+
+    await waitFor(() => expect(backend.providers.length).toBe(1));
+    expect(backend.calls).toContain("provider_upsert");
+    // Rust receives the key...
+    expect(backend.providers[0].apiKey).toBe("sk-secret-value");
+    // ...and the WebView is never given it back.
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("API Key 已存入系统钥匙串"),
+    );
+    expect(document.body.textContent).not.toContain("sk-secret-value");
+    expect((document.querySelector("#provider-key") as HTMLInputElement).value).toBe("");
+  });
+
+  it("lists imported sources and can drop one", async () => {
+    backend.sources.push({
+      id: "source-1",
+      kind: "file",
+      title: "线性代数讲义",
+      uri: null,
+      originalFilename: "linear-algebra.pdf",
+      status: "ready",
+      contentHash: null,
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    mountApp();
+    await boot();
+    await openLayer();
+
+    await clickAsync(layerButton("资料库"));
+    await waitFor(() => expect(screen.getByText("线性代数讲义")).toBeTruthy());
+    expect(document.body.textContent).toContain("已索引，可被引用");
+
+    await clickAsync(
+      document.querySelector('button[aria-label="移除线性代数讲义"]'),
+    );
+    await waitFor(() => expect(backend.calls).toContain("source_delete"));
+  });
+});

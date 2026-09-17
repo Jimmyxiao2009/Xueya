@@ -239,7 +239,7 @@ swipe preview must render a neighbouring route synchronously, mid-gesture.
 | --- | --- | --- |
 | Rust unit | `src-tauri/src/**` (42 tests) | repo CRUD, migrations, planner, grading, mastery, chunking, hashing |
 | Rust integration | `src-tauri/tests/learning_loop.rs` (10 tests) | the loop end to end against a real SQLite file |
-| Frontend | `src/test/app.test.tsx` (9 tests) | route switching, lesson open/close, quiz submit (correct / wrong / ungraded), route creation |
+| Frontend | `src/test/app.test.tsx` (11 tests) | route switching, lesson open/close, quiz submit (correct / wrong / ungraded), route creation, BYOK save (key never echoed), source library |
 | Frontend unit | `src/lib/design.test.ts` (13 tests) | road geometry, drag physics, release timing, clip math, node faces |
 
 `src/test/fakeBackend.ts` implements the IPC contract in memory (including job
@@ -248,19 +248,28 @@ frontend tests exercise the real DTO shapes.
 
 ---
 
-## 8. Known gaps
+## 8. Secondary surfaces
+
+Both are reached from the management layer (the acrylic sheet behind the route
+title) and both are real screens, not stubs:
+
+* **资料库** (`screens/SourcesScreen.tsx`) — lists every source a route can
+  cite, with re-index and delete.
+* **设置** (`screens/SettingsScreen.tsx`) — BYOK: add / edit / test / remove a
+  model service (base URL, chat model, embedding model, API key) and choose the
+  web search provider. The key field is write-only and never prefilled.
+
+## 9. Known gaps
 
 These are real and unfinished:
 
-* No settings UI. `settings_get` / `settings_update` / `provider_*` are typed in
-  `api.ts` and implemented in Rust, but no screen calls them yet — adding a
-  provider today means calling the command directly.
-* No sources screen. Import works from the create-route form
-  (`source_import_bytes`, `source_import_url`), but there is no library view for
-  listing, re-indexing or deleting sources.
+* `search_web` is implemented (`search/brave.rs`) and configurable from
+  Settings, but the create-route form does not yet request web collection — it
+  imports the links you paste and nothing more.
 * `learning_respond` / `tutor_send` are wired to a real backend service and
   rendered in the chat, but the tutor's suggestions do not yet branch the plan.
-* `search_web` is implemented (`search/brave.rs`) and typed, but the create form
-  does not request web collection.
+* The create form's 联网搜集资料 toggle stores its value but does not change
+  what the backend does.
 * Bundling is configured (`bundle.targets: "all"`) but only `--no-bundle` builds
-  have been run in this environment.
+  have been run in this environment, because the MSI/NSIS toolchain is not
+  available offline.

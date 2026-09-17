@@ -21,6 +21,8 @@ import { LessonPane } from "@/components/lesson/LessonPane";
 import { LearningScreen } from "@/components/learning/LearningScreen";
 import { CreateRouteScreen } from "@/screens/CreateRouteScreen";
 import { GeneratingScreen } from "@/screens/GeneratingScreen";
+import { SettingsScreen } from "@/screens/SettingsScreen";
+import { SourcesScreen } from "@/screens/SourcesScreen";
 import { useControlFeedback } from "@/hooks/useControlFeedback";
 import { useReducedMotion, prefersReducedMotion } from "@/hooks/useReducedMotion";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
@@ -34,6 +36,7 @@ import { useLearningStore } from "@/stores/learningStore";
 import { useLessonStore } from "@/stores/lessonStore";
 import { useJobStore } from "@/stores/jobStore";
 import { useRouteStore } from "@/stores/routeStore";
+import { useSourceStore } from "@/stores/sourceStore";
 import { toast, useNavStore } from "@/stores/uiStore";
 
 type PendingTransition =
@@ -77,6 +80,9 @@ export default function App() {
   const dismissNotice = useRouteStore((state) => state.dismissNotice);
   const loadDetail = useRouteStore((state) => state.loadDetail);
 
+  const sources = useSourceStore((state) => state.sources);
+  const loadSources = useSourceStore((state) => state.load);
+
   const lessons = useLessonStore((state) => state.byNode);
   const prepareLesson = useLessonStore((state) => state.prepare);
   const learning = useLearningStore();
@@ -119,8 +125,8 @@ export default function App() {
   useEffect(() => {
     if (bootedRef.current) return;
     bootedRef.current = true;
-    void loadRoutes().then(() => setBooted(true));
-  }, [loadRoutes]);
+    void Promise.all([loadRoutes(), loadSources()]).then(() => setBooted(true));
+  }, [loadRoutes, loadSources]);
 
   /* --------------------------------------------------------------- view layer */
 
@@ -546,6 +552,11 @@ export default function App() {
     [applyJob, creating, setView, startJob],
   );
 
+  const backToLayer = useCallback(() => {
+    setView("home", -1);
+    setLayerOpen(true);
+  }, [setView]);
+
   const generationReady = useCallback(
     async (courseId: string | null) => {
       await loadRoutes();
@@ -641,10 +652,7 @@ export default function App() {
 
       {view === "create" ? (
         <CreateRouteScreen
-          onBack={() => {
-            setView("home", -1);
-            setLayerOpen(true);
-          }}
+          onBack={backToLayer}
           onCreate={submitCreate}
           submitting={creating}
         />
@@ -660,6 +668,10 @@ export default function App() {
           onReady={generationReady}
         />
       ) : null}
+
+      {view === "sources" ? <SourcesScreen onBack={backToLayer} /> : null}
+
+      {view === "settings" ? <SettingsScreen onBack={backToLayer} /> : null}
 
       <RoadmapLayer
         open={layerOpen}
@@ -682,6 +694,15 @@ export default function App() {
           setLayerOpen(false);
           setView("create", 1);
         }}
+        onOpenSources={() => {
+          setLayerOpen(false);
+          setView("sources", 1);
+        }}
+        onOpenSettings={() => {
+          setLayerOpen(false);
+          setView("settings", 1);
+        }}
+        sourceCount={sources.length}
       />
 
       <Toast />

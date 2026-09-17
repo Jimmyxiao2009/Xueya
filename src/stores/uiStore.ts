@@ -1,6 +1,13 @@
 import { create } from "zustand";
 
-export type View = "home" | "lesson" | "learning" | "create" | "generating";
+export type View =
+  | "home"
+  | "lesson"
+  | "learning"
+  | "create"
+  | "generating"
+  | "sources"
+  | "settings";
 export type LessonTab = "todo" | "materials";
 
 interface NavState {

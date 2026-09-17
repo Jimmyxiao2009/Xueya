@@ -155,6 +155,19 @@ export class FakeBackend {
   jobs = new Map<string, Record<string, unknown>>();
   sessions = new Map<string, { nodeId: string; answered: number }>();
   sources: unknown[] = [];
+  providers: Array<{
+    id: string;
+    displayName: string;
+    baseUrl: string;
+    chatModel: string;
+    embeddingModel: string;
+    enabled: boolean;
+    apiKey: string | null;
+  }> = [];
+  settings: { searchProvider: string; braveApiKey: string | null } = {
+    searchProvider: "none",
+    braveApiKey: null,
+  };
   calls: string[] = [];
 
   constructor() {
@@ -441,6 +454,89 @@ export class FakeBackend {
           message: "Indexed",
           errorJson: null,
           resultJson: JSON.stringify({ sourceId }),
+          createdAt: NOW,
+          startedAt: NOW,
+          completedAt: NOW,
+        });
+        return this.jobs.get(jobId);
+      }
+      case "settings_get":
+        return {
+          searchProvider: this.settings.searchProvider,
+          hasBraveApiKey: Boolean(this.settings.braveApiKey),
+        };
+      case "settings_update": {
+        if (typeof input.searchProvider === "string") {
+          this.settings.searchProvider = input.searchProvider;
+        }
+        if (typeof input.braveApiKey === "string" && input.braveApiKey) {
+          this.settings.braveApiKey = input.braveApiKey;
+        }
+        return {
+          searchProvider: this.settings.searchProvider,
+          hasBraveApiKey: Boolean(this.settings.braveApiKey),
+        };
+      }
+      case "provider_list":
+        return this.providers.map((provider) => ({
+          id: provider.id,
+          displayName: provider.displayName,
+          baseUrl: provider.baseUrl,
+          chatModel: provider.chatModel,
+          embeddingModel: provider.embeddingModel,
+          enabled: provider.enabled,
+          // The key itself is never returned, exactly like the Rust command.
+          hasApiKey: Boolean(provider.apiKey),
+        }));
+      case "provider_upsert": {
+        const existing = input.id
+          ? this.providers.find((provider) => provider.id === input.id)
+          : undefined;
+        const target =
+          existing ??
+          ({
+            id: `provider-${this.providers.length + 1}`,
+            displayName: "",
+            baseUrl: "",
+            chatModel: "",
+            embeddingModel: "",
+            enabled: true,
+            apiKey: null,
+          } as (typeof this.providers)[number]);
+        target.displayName = String(input.displayName ?? target.displayName);
+        target.baseUrl = String(input.baseUrl ?? target.baseUrl);
+        target.chatModel = String(input.chatModel ?? target.chatModel);
+        target.embeddingModel = String(input.embeddingModel ?? target.embeddingModel);
+        target.enabled = Boolean(input.enabled ?? target.enabled);
+        if (typeof input.apiKey === "string" && input.apiKey) {
+          target.apiKey = input.apiKey;
+        }
+        if (!existing) this.providers.push(target);
+        return {
+          id: target.id,
+          displayName: target.displayName,
+          baseUrl: target.baseUrl,
+          chatModel: target.chatModel,
+          embeddingModel: target.embeddingModel,
+          enabled: target.enabled,
+          hasApiKey: Boolean(target.apiKey),
+        };
+      }
+      case "provider_delete":
+        this.providers = this.providers.filter((provider) => provider.id !== id);
+        return null;
+      case "provider_test":
+        return { ok: true, message: "reachable" };
+      case "source_reindex": {
+        const jobId = `reindex-job-${this.jobs.size + 1}`;
+        this.jobs.set(jobId, {
+          id: jobId,
+          kind: "source_ingestion",
+          status: "completed",
+          progress: 1,
+          message: "Reindexed",
+          errorJson: null,
+          resultJson: JSON.stringify({ sourceId: id }),
           createdAt: NOW,
           startedAt: NOW,
           completedAt: NOW,

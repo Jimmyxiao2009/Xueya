@@ -11,6 +11,7 @@ interface SourceState {
   importFile: (file: File) => Promise<string | null>;
   importUrl: (url: string, title?: string) => Promise<string | null>;
   remove: (id: string) => Promise<void>;
+  reindex: (id: string) => Promise<void>;
 }
 
 function base64Of(buffer: ArrayBuffer): string {
@@ -82,6 +83,20 @@ export const useSourceStore = create<SourceState>((set, get) => ({
     } catch (error) {
       set({ error: errorOf(error).message });
       return null;
+    }
+  },
+
+  reindex: async (id) => {
+    try {
+      const job = await api.sourceReindex(id);
+      const finished = await watchJob(job.id, () => undefined);
+      if (finished.status !== "completed") {
+        set({ error: "重新索引失败" });
+        return;
+      }
+      await get().load();
+    } catch (error) {
+      set({ error: errorOf(error).message });
     }
   },
 
