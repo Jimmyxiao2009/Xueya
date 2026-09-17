@@ -278,7 +278,14 @@ export const useLearningStore = create<LearningState>((set, get) => ({
             role: "assistant",
             kind: "text",
             text: turn.message,
-            note: turn.generatedBy === "mock" ? "离线回答 · 未接入模型" : undefined,
+            // A tutor turn can change the roadmap. Saying so here is the
+            // difference between adapting and silently rewriting things.
+            note:
+              turn.adaptation?.kind === "review_inserted"
+                ? "已在你的路线里插入一节针对性加练"
+                : turn.generatedBy === "mock"
+                  ? "离线回答 · 未接入模型"
+                  : undefined,
           },
         ],
         lastAdaptation: turn.adaptation ?? state.lastAdaptation,

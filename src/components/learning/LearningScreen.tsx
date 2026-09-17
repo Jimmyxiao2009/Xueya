@@ -132,7 +132,14 @@ export function LearningScreen({
                     <small>{message.note}</small>
                   </div>
                 ) : (
-                  <p>{message.text}</p>
+                  <>
+                    <p>{message.text}</p>
+                    {message.note ? (
+                      <small className="mt-1 block text-xs text-muted">
+                        {message.note}
+                      </small>
+                    ) : null}
+                  </>
                 )}
               </div>
             ))}

@@ -6,6 +6,7 @@ use crate::db::repo::{
 };
 use crate::domain::{AdaptationEvent, AdaptationKind, LearningSessionStatus};
 use crate::error::AppError;
+use crate::services::course_service::CourseService;
 use crate::services::knowledge_service::KnowledgeService;
 use crate::state::AppState;
 use serde::Deserialize;
@@ -137,6 +138,32 @@ impl<'a> TutorService<'a> {
             );
             loop_repo::insert_adaptation(&self.state.pool, &event).await?;
             adaptation = Some(event);
+
+            // A named misconception is actionable, so it changes the roadmap
+            // the same way a failed check question does: one targeted practice
+            // node right after this one. The shared title keeps the two paths
+            // from stacking duplicates on the same node.
+            let title = crate::domain::adaptation::review_node_title(&node.title);
+            if !course_repo::node_exists_for_title(&self.state.pool, session.course_id, &title)
+                .await?
+            {
+                CourseService::new(self.state)
+                    .insert_review_node(
+                        session.course_id,
+                        node.id,
+                        &title,
+                        &crate::domain::adaptation::review_node_objective(&[diagnosis.to_owned()]),
+                        "导师发现理解偏差，插入针对性加练",
+                        None,
+                    )
+                    .await?;
+                // Report the roadmap change, not just the observation.
+                adaptation = loop_repo::list_adaptations(&self.state.pool, session.course_id, 1)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .or(adaptation);
+            }
         }
 
         Ok(TutorTurn {

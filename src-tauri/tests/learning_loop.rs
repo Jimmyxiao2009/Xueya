@@ -9,7 +9,9 @@ use verruckt_lib::db::repo::{courses as course_repo, learning_loop as loop_repo}
 use verruckt_lib::domain::{CourseNodeStatus, NodeKind, QuizKind};
 use verruckt_lib::secrets::keyring_store::InMemorySecretStore;
 use verruckt_lib::services::course_service::{CourseService, RouteRequest};
+use verruckt_lib::services::learning_service::LearningService;
 use verruckt_lib::services::quiz_service::QuizService;
+use verruckt_lib::services::tutor_service::TutorService;
 use verruckt_lib::state::{AppPaths, AppState};
 
 async fn test_state() -> (AppState, TempDir) {
@@ -219,6 +221,61 @@ async fn a_wrong_answer_updates_the_learner_model_and_inserts_practice() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn a_confused_learner_gets_targeted_practice_on_the_roadmap() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "射影几何").await;
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+    let node = nodes[0].clone();
+
+    let started = LearningService::new(&state)
+        .start(node.id, None)
+        .await
+        .expect("session");
+
+    // The offline provider names a misconception for this phrasing, so the
+    // whole diagnose -> adapt step is exercisable with no API key at all.
+    let turn = TutorService::new(&state)
+        .turn(started.session.id, "我还是不懂为什么要这样定义")
+        .await
+        .expect("tutor turn");
+    assert!(turn.diagnosis.is_some());
+
+    let adaptation = turn.adaptation.expect("an adaptation");
+    assert_eq!(adaptation.kind, "review_inserted");
+
+    let after = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes after");
+    assert_eq!(after.len(), nodes.len() + 1);
+    let review = after
+        .iter()
+        .find(|candidate| candidate.kind == NodeKind::Review.as_str())
+        .expect("a review node");
+    assert!(review.title.starts_with("加练 · "));
+    assert_eq!(review.order_hint, node.order_hint + 1);
+
+    // A second confused turn must not stack another node on the same place.
+    TutorService::new(&state)
+        .turn(started.session.id, "还是不明白")
+        .await
+        .expect("second turn");
+    let after_twice = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes after twice");
+    assert_eq!(after_twice.len(), after.len());
+
+    // The conversation itself is persisted, both sides of it.
+    let messages = loop_repo::list_messages(&state.pool, started.session.id)
+        .await
+        .expect("messages");
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[0].0, "user");
+    assert_eq!(messages[1].0, "assistant");
 }
 
 #[tokio::test]

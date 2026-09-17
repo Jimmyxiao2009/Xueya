@@ -327,6 +327,33 @@ describe("management layer", () => {
     expect((document.querySelector("#provider-key") as HTMLInputElement).value).toBe("");
   });
 
+  it("lets the tutor change the roadmap and says so in the chat", async () => {
+    mountApp();
+    await boot();
+    await clickAsync(document.querySelector(".node-hit"));
+    await waitFor(() => expect(document.querySelector(".lesson-dock .primary")).toBeTruthy());
+    await clickAsync(document.querySelector(".lesson-dock .primary"));
+    await waitFor(() => expect(document.querySelector("#chat-input")).toBeTruthy());
+
+    const nodesBefore = backend.nodeCount();
+    await act(async () => {
+      fireEvent.change(document.querySelector("#chat-input") as HTMLInputElement, {
+        target: { value: "我还是不懂这里为什么要这样定义" },
+      });
+    });
+    await act(async () => {
+      fireEvent.submit(document.querySelector(".composer") as HTMLFormElement);
+      await new Promise((resolve) => window.setTimeout(resolve, 80));
+    });
+
+    await waitFor(() => expect(backend.calls).toContain("tutor_send"));
+    // The learner is told the roadmap moved, instead of finding out later.
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("已在你的路线里插入一节针对性加练"),
+    );
+    expect(backend.nodeCount()).toBe(nodesBefore + 1);
+  });
+
   it("collects web results as real sources before planning a route", async () => {
     // A search provider is configured, so the create form's toggle can deliver.
     backend.settings.braveApiKey = "brave-test-key";

@@ -195,6 +195,13 @@ the node also changed the roadmap.
 | `quiz_submit` | `{ input: { questionId, answer: string[], sessionId? } }` | `QuizResult` |
 | `tutor_send` | `{ input: { sessionId, message } }` | `TutorTurn` |
 
+`tutor_send` persists both sides of the conversation into `learning_messages`.
+If the reply names a misconception, it also inserts a `misconception_detected`
+adaptation and splices a `加练 · …` review node after the current node — the
+same node a failed check question would have created, never a second one.
+`TutorTurn.adaptation` carries the roadmap change (kind `review_inserted`) so
+the chat can say what happened.
+
 ```ts
 interface QuizResult {
   questionId: string;

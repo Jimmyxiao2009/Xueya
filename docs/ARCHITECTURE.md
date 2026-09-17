@@ -134,10 +134,14 @@ The wire DTOs use the backend names; `src/api.ts` is where the rename happens.
    (`single`/`multi`/`fill`) are graded locally by `domain/quiz.rs`;
    `short`/`image` come back `graded: false` ("已提交 · 待评阅") and do not
    move the learner model.
-5. **Diagnose** — a wrong objective answer writes a `learner_states` row and
-   emits an `adaptation_events` row of kind `review_inserted`. A review node is
-   spliced in right after the failed node; `course_get` returns the new
-   roadmap, and the home screen shows a notice strip explaining the change.
+5. **Diagnose** — two things can go wrong, and both are handled the same way:
+   a wrong objective answer writes a `learner_states` row, and a tutor turn
+   that names a misconception writes an `adaptation_events` row of kind
+   `misconception_detected`. Either one can splice a review node in right
+   after the node it belongs to. `course_get` then returns the new roadmap,
+   the home screen shows a notice strip explaining the change, and the chat
+   says so in the turn that caused it. The shared `加练 · …` title means the
+   two paths can never stack duplicates on the same node.
 6. **Finish** — `course_node_complete` marks the node completed, unlocks the
    next one, and returns the updated course plus the adaptation.
 7. **Review** — `review_at` on `course_nodes` plus mastery in
@@ -244,7 +248,7 @@ swipe preview must render a neighbouring route synchronously, mid-gesture.
 | --- | --- | --- |
 | Rust unit | `src-tauri/src/**` (42 tests) | repo CRUD, migrations, planner, grading, mastery, chunking, hashing |
 | Rust integration | `src-tauri/tests/learning_loop.rs` (10 tests) | the loop end to end against a real SQLite file |
-| Frontend | `src/test/app.test.tsx` (11 tests) | route switching, lesson open/close, quiz submit (correct / wrong / ungraded), route creation, BYOK save (key never echoed), source library |
+| Frontend | `src/test/app.test.tsx` (13 tests) | route switching, lesson open/close, quiz submit (correct / wrong / ungraded), route creation, web collection, BYOK save (key never echoed), source library, tutor adaptation |
 | Frontend unit | `src/lib/design.test.ts` (13 tests) | road geometry, drag physics, release timing, clip math, node faces |
 
 `src/test/fakeBackend.ts` implements the IPC contract in memory (including job
@@ -268,8 +272,10 @@ title) and both are real screens, not stubs:
 
 These are real and unfinished:
 
-* `learning_respond` / `tutor_send` are wired to a real backend service and
-  rendered in the chat, but the tutor's suggestions do not yet branch the plan.
+* `learning_respond` (free-text answers to a check question) is graded by the
+  model but does not feed `learner_states` the way the tutor's diagnosis does.
+* The tutor adapts by *inserting practice*. It cannot yet shorten, reorder or
+  re-word the remaining steps of the lesson it is in.
 * Web collection imports the top hits as sources and grounds the route in them,
   but it does not de-duplicate near-identical pages or re-rank by quality.
 * A provider's API key can be tested and stored, but nothing verifies the

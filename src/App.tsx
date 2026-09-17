@@ -83,6 +83,7 @@ export default function App() {
   const completeNode = useRouteStore((state) => state.completeNode);
   const dismissNotice = useRouteStore((state) => state.dismissNotice);
   const loadDetail = useRouteStore((state) => state.loadDetail);
+  const loadAdaptations = useRouteStore((state) => state.loadAdaptations);
 
   const sources = useSourceStore((state) => state.sources);
   const loadSources = useSourceStore((state) => state.load);
@@ -167,10 +168,12 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, activeRouteId]);
 
-  // A wrong answer can insert a review node; keep the roadmap honest.
+  // A wrong answer, or a tutor that names a misconception, can insert a review
+  // node; keep the roadmap and its notice strip honest.
   useEffect(() => {
     if (!learning.lastAdaptation || !activeRouteId) return;
     void loadDetail(activeRouteId);
+    void loadAdaptations(activeRouteId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [learning.lastAdaptation?.id]);
 

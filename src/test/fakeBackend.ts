@@ -205,6 +205,52 @@ export class FakeBackend {
     for (const node of nodes) this.questions.set(node.id, makeQuestions(node));
   }
 
+  /**
+   * Splice one targeted practice node after `node`, at most once per node.
+   * Shared by the failed-check path and the tutor path, exactly like the two
+   * Rust services share `CourseService::insert_review_node`.
+   */
+  /** Total nodes across every route; tests use it to watch the roadmap move. */
+  nodeCount(): number {
+    let total = 0;
+    for (const nodes of this.nodes.values()) total += nodes.length;
+    return total;
+  }
+
+  private insertReview(node: FakeNode, reason: string) {
+    const nodes = this.nodes.get(node.courseId) ?? [];
+    const title = `加练 · ${node.title}`;
+    if (nodes.some((entry) => entry.title === title)) return null;
+    const inserted: FakeNode = {
+      ...node,
+      id: `${node.courseId}-review-${nodes.length}`,
+      title,
+      kind: "review",
+      status: "available",
+      orderHint: node.orderHint + 1,
+      generatedBy: "adaptation",
+    };
+    nodes.splice(node.orderHint + 1, 0, inserted);
+    nodes.forEach((entry, index) => {
+      entry.orderHint = index;
+    });
+    this.questions.set(inserted.id, makeQuestions(inserted));
+    const adaptation = {
+      id: `adapt-${this.adaptations.get(node.courseId)?.length ?? 0}`,
+      courseId: node.courseId,
+      nodeId: node.id,
+      kind: "review_inserted",
+      reason,
+      payloadJson: "{}",
+      createdAt: NOW,
+    };
+    this.adaptations.set(node.courseId, [
+      adaptation,
+      ...(this.adaptations.get(node.courseId) ?? []),
+    ]);
+    return adaptation;
+  }
+
   private courseDto(route: FakeRoute) {
     const nodes = this.nodes.get(route.id) ?? [];
     const completed = nodes.filter((node) => node.status === "completed").length;
@@ -372,40 +418,10 @@ export class FakeBackend {
           question.answer.every((expected) =>
             answer.some((picked) => normalized(picked) === normalized(expected)),
           );
-        let adaptation: unknown = null;
-        if (objective && !correct && node) {
-          const nodes = this.nodes.get(node.courseId) ?? [];
-          const title = `加练 · ${node.title}`;
-          if (!nodes.some((entry) => entry.title === title)) {
-            const inserted: FakeNode = {
-              ...node,
-              id: `${node.courseId}-review-${nodes.length}`,
-              title,
-              kind: "review",
-              status: "available",
-              orderHint: node.orderHint + 1,
-              generatedBy: "adaptation",
-            };
-            nodes.splice(node.orderHint + 1, 0, inserted);
-            nodes.forEach((entry, index) => {
-              entry.orderHint = index;
-            });
-            this.questions.set(inserted.id, makeQuestions(inserted));
-            adaptation = {
-              id: `adapt-${this.adaptations.get(node.courseId)?.length ?? 0}`,
-              courseId: node.courseId,
-              nodeId: node.id,
-              kind: "review_inserted",
-              reason: "答错了理解检查",
-              payloadJson: "{}",
-              createdAt: NOW,
-            };
-            this.adaptations.set(node.courseId, [
-              adaptation,
-              ...(this.adaptations.get(node.courseId) ?? []),
-            ]);
-          }
-        }
+        const adaptation =
+          objective && !correct && node
+            ? this.insertReview(node, "答错了理解检查")
+            : null;
         return {
           questionId,
           nodeId: question.nodeId,
@@ -422,15 +438,24 @@ export class FakeBackend {
           insertedNodeId: adaptation ? "inserted" : null,
         };
       }
-      case "tutor_send":
+      case "tutor_send": {
+        const session = this.sessions.get(String(input.sessionId));
+        const node = session ? this.findNode(session.nodeId) : undefined;
+        const confused = /不懂|不会|不明白|困惑|为什么/.test(String(input.message));
+        // Mirrors the offline provider: confusion is a diagnosis, and a
+        // diagnosis puts practice on the roadmap.
+        const adaptation =
+          confused && node ? this.insertReview(node, "导师发现理解偏差") : null;
         return {
-          message: "我们换个角度想：先看它的定义，再看一个反例。",
-          suggestedAction: "continue",
-          diagnosis: null,
+          message: confused
+            ? "我们换个角度想：先看它的定义，再看一个反例。"
+            : "收到。我会根据你的回答继续提问。",
+          suggestedAction: confused ? "explain" : "continue",
+          diagnosis: confused ? "学习者主动表示不理解" : null,
           generatedBy: "mock",
-          routeUpdated: false,
-          adaptation: null,
+          adaptation,
         };
+      }
       case "source_list":
         return this.sources;
       case "source_import_bytes":
