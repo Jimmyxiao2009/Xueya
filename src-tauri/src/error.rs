@@ -16,6 +16,13 @@ pub const AI_RESPONSE_INVALID: &str = "AI_RESPONSE_INVALID";
 pub const JOB_CANCELLED: &str = "JOB_CANCELLED";
 pub const UNSUPPORTED_FORMAT: &str = "UNSUPPORTED_FORMAT";
 pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
+pub const CLOUD_AUTH_ERROR: &str = "CLOUD_AUTH_ERROR";
+pub const CLOUD_ENTITLEMENT_REQUIRED: &str = "CLOUD_ENTITLEMENT_REQUIRED";
+pub const CLOUD_QUOTA_EXCEEDED: &str = "CLOUD_QUOTA_EXCEEDED";
+pub const CLOUD_STORAGE_QUOTA_EXCEEDED: &str = "CLOUD_STORAGE_QUOTA_EXCEEDED";
+pub const CLOUD_SYNC_CONFLICT: &str = "CLOUD_SYNC_CONFLICT";
+pub const CLOUD_UNAVAILABLE: &str = "CLOUD_UNAVAILABLE";
+pub const CLOUD_SESSION_EXPIRED: &str = "CLOUD_SESSION_EXPIRED";
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum AppError {
@@ -47,6 +54,20 @@ pub enum AppError {
     UnsupportedFormat(String),
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("cloud authentication error: {0}")]
+    CloudAuth(String),
+    #[error("cloud entitlement required")]
+    CloudEntitlementRequired,
+    #[error("cloud AI quota exceeded")]
+    CloudQuotaExceeded,
+    #[error("cloud storage quota exceeded")]
+    CloudStorageQuotaExceeded,
+    #[error("cloud sync conflict: {0}")]
+    CloudSyncConflict(String),
+    #[error("cloud unavailable: {0}")]
+    CloudUnavailable(String),
+    #[error("cloud session expired")]
+    CloudSessionExpired,
 }
 
 impl AppError {
@@ -66,6 +87,13 @@ impl AppError {
             Self::JobCancelled => JOB_CANCELLED,
             Self::UnsupportedFormat(_) => UNSUPPORTED_FORMAT,
             Self::Internal(_) => INTERNAL_ERROR,
+            Self::CloudAuth(_) => CLOUD_AUTH_ERROR,
+            Self::CloudEntitlementRequired => CLOUD_ENTITLEMENT_REQUIRED,
+            Self::CloudQuotaExceeded => CLOUD_QUOTA_EXCEEDED,
+            Self::CloudStorageQuotaExceeded => CLOUD_STORAGE_QUOTA_EXCEEDED,
+            Self::CloudSyncConflict(_) => CLOUD_SYNC_CONFLICT,
+            Self::CloudUnavailable(_) => CLOUD_UNAVAILABLE,
+            Self::CloudSessionExpired => CLOUD_SESSION_EXPIRED,
         }
     }
 
@@ -77,6 +105,7 @@ impl AppError {
                 | Self::Search(_)
                 | Self::Embedding(_)
                 | Self::Database(_)
+                | Self::CloudUnavailable(_)
         )
     }
 
@@ -99,6 +128,13 @@ impl AppError {
             Self::JobCancelled => "The job was cancelled.",
             Self::UnsupportedFormat(_) => "The document format is not supported.",
             Self::Internal(_) => "An internal error occurred.",
+            Self::CloudAuth(_) => "Verruckt Cloud sign-in is required.",
+            Self::CloudEntitlementRequired => "This account does not include that capability.",
+            Self::CloudQuotaExceeded => "The monthly Verruckt Cloud AI quota is exhausted.",
+            Self::CloudStorageQuotaExceeded => "The Verruckt Cloud storage quota is exhausted.",
+            Self::CloudSyncConflict(_) => "A sync conflict needs attention.",
+            Self::CloudUnavailable(_) => "Verruckt Cloud is temporarily unavailable.",
+            Self::CloudSessionExpired => "The Verruckt Cloud session has expired; sign in again.",
         }
     }
 
@@ -115,8 +151,16 @@ impl AppError {
             | Self::Parser(message)
             | Self::Embedding(message)
             | Self::AiResponseInvalid(message)
-            | Self::Internal(message) => Some(redact(message)),
-            Self::ProviderAuth | Self::JobCancelled => None,
+            | Self::Internal(message)
+            | Self::CloudAuth(message)
+            | Self::CloudSyncConflict(message)
+            | Self::CloudUnavailable(message) => Some(redact(message)),
+            Self::ProviderAuth
+            | Self::JobCancelled
+            | Self::CloudEntitlementRequired
+            | Self::CloudQuotaExceeded
+            | Self::CloudStorageQuotaExceeded
+            | Self::CloudSessionExpired => None,
         }
     }
 
@@ -141,6 +185,17 @@ impl AppError {
                 Self::UnsupportedFormat(format!("{context}: {message}"))
             }
             Self::Internal(message) => Self::Internal(format!("{context}: {message}")),
+            Self::CloudAuth(message) => Self::CloudAuth(format!("{context}: {message}")),
+            Self::CloudSyncConflict(message) => {
+                Self::CloudSyncConflict(format!("{context}: {message}"))
+            }
+            Self::CloudUnavailable(message) => {
+                Self::CloudUnavailable(format!("{context}: {message}"))
+            }
+            Self::CloudEntitlementRequired => Self::CloudEntitlementRequired,
+            Self::CloudQuotaExceeded => Self::CloudQuotaExceeded,
+            Self::CloudStorageQuotaExceeded => Self::CloudStorageQuotaExceeded,
+            Self::CloudSessionExpired => Self::CloudSessionExpired,
         }
     }
 }

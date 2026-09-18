@@ -24,9 +24,13 @@ impl BlobStore {
         &self.root
     }
 
-    fn relative_path(hash: &str) -> String {
+    pub fn relative_path_for_hash(hash: &str) -> String {
         let prefix = &hash[..2.min(hash.len())];
         format!("{prefix}/{hash}")
+    }
+
+    fn relative_path(hash: &str) -> String {
+        Self::relative_path_for_hash(hash)
     }
 
     pub fn full_path(&self, relative_path: &str) -> PathBuf {
