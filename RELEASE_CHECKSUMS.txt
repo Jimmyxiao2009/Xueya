@@ -1,0 +1,24 @@
+Orbit v0.1.0-rc.1 release checksums
+Generated during COMPETITION RELEASE VALIDATION & FREEZE.
+
+NSIS installer
+  path:   src-tauri/target/release/bundle/nsis/Orbit_0.1.0-rc.1_x64-setup.exe
+  bytes:  7003781
+  sha256: c5b26e36cded72bc96e4e1f80e4b6b87ff0de811d2ef872c811976b2feaea5426
+  ProductName:    Orbit
+  FileVersion:    0.1.0-rc.1
+  ProductVersion: 0.1.0-rc.1
+
+Installed desktop executable
+  path:   %LOCALAPPDATA%\Orbit\verruckt.exe
+  bytes:  28133376
+  sha256: 7ad47b9fd5471b2ae5bd1417588e9b3e80d50cee0a39a9418b917d727680b1e4
+  ProductName:    Orbit
+  FileVersion:    0.1.0-rc.1
+  ProductVersion: 0.1.0-rc.1
+  CompanyName:    verruckt
+
+Notes
+  - The NSIS installer is the supported Windows release artifact for rc.1.
+  - MSI remains unavailable because the pre-release identifier `rc.1` is not
+    numeric-only; changing that would alter the frozen release version.
