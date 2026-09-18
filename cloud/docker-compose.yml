@@ -1,4 +1,18 @@
 services:
+  mock-openai:
+    image: python:3.12-alpine
+    restart: unless-stopped
+    command: ["python", "/app/mock_upstream.py"]
+    volumes:
+      - ./tests/mock_upstream.py:/app/mock_upstream.py:ro
+    ports:
+      - "8099:8099"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8099/healthz')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -46,6 +60,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      mock-openai:
+        condition: service_healthy
     environment:
       VERRUCKT_ENV: development
       VERRUCKT_BIND: 0.0.0.0
@@ -60,8 +76,8 @@ services:
       VERRUCKT_OBJECT_STORAGE_SECRET_KEY: ${VERRUCKT_OBJECT_STORAGE_SECRET_KEY:-minioadmin}
       VERRUCKT_OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
       VERRUCKT_OBJECT_STORAGE_PRESIGN_TTL_SECS: "900"
-      VERRUCKT_UPSTREAM_BASE_URL: ${VERRUCKT_UPSTREAM_BASE_URL:-}
-      VERRUCKT_UPSTREAM_API_KEY: ${VERRUCKT_UPSTREAM_API_KEY:-}
+      VERRUCKT_UPSTREAM_BASE_URL: ${VERRUCKT_UPSTREAM_BASE_URL:-http://mock-openai:8099/v1}
+      VERRUCKT_UPSTREAM_API_KEY: ${VERRUCKT_UPSTREAM_API_KEY:-mock-key}
       VERRUCKT_UPSTREAM_CHAT_MODEL: ${VERRUCKT_UPSTREAM_CHAT_MODEL:-gpt-4o-mini}
       VERRUCKT_UPSTREAM_REASONING_MODEL: ${VERRUCKT_UPSTREAM_REASONING_MODEL:-gpt-4o}
       VERRUCKT_UPSTREAM_EMBEDDING_MODEL: ${VERRUCKT_UPSTREAM_EMBEDDING_MODEL:-text-embedding-3-small}

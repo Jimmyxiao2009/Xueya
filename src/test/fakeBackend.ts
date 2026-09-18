@@ -165,10 +165,41 @@ export class FakeBackend {
     apiKey: string | null;
     protocol: string;
   }> = [];
-  settings: { searchProvider: string; braveApiKey: string | null } = {
+  settings: { searchProvider: string; braveApiKey: string | null; aiMode: string } = {
     searchProvider: "none",
     braveApiKey: null,
+    aiMode: "offline",
   };
+  cloudAccount: {
+    loggedIn: boolean;
+    email: string | null;
+    plan: string | null;
+    entitlements: Record<string, unknown> | null;
+    device: Record<string, unknown> | null;
+    syncEnabled: boolean;
+    baseUrl: string;
+  } = {
+    loggedIn: false,
+    email: null,
+    plan: null,
+    entitlements: null,
+    device: null,
+    syncEnabled: false,
+    baseUrl: "http://127.0.0.1:8080",
+  };
+  cloudDevices: Array<Record<string, unknown>> = [];
+  cloudUsage: {
+    periodStart: string;
+    creditsUsed: number;
+    creditsLimit: number;
+    creditsRemaining: number;
+  } = {
+    periodStart: NOW,
+    creditsUsed: 0,
+    creditsLimit: 100000,
+    creditsRemaining: 100000,
+  };
+  private cloudCredentials = new Map<string, string>();
   calls: string[] = [];
 
   constructor() {
@@ -294,6 +325,43 @@ export class FakeBackend {
       generatedBy: "deterministic",
       hasEvidence: false,
     };
+  }
+
+  private cloudLoginSuccess(email: string) {
+    const device = {
+      id: "00000000-0000-0000-0000-0000000000d1",
+      name: "Windows PC",
+      platform: "windows",
+      appVersion: "0.1.0",
+      createdAt: NOW,
+      lastSeenAt: NOW,
+    };
+    const entitlements = {
+      cloudSync: true,
+      officialAi: true,
+      maxDevices: 5,
+      monthlyAiCredits: 100000,
+      storageBytes: 5368709120,
+      devicesUsed: 1,
+      monthlyAiCreditsUsed: this.cloudUsage.creditsUsed,
+      cloudStorageBytesUsed: 0,
+      plan: "pro",
+    };
+    this.cloudAccount = {
+      loggedIn: true,
+      email,
+      plan: "pro",
+      entitlements,
+      device,
+      syncEnabled: this.cloudAccount.syncEnabled,
+      baseUrl: this.cloudAccount.baseUrl,
+    };
+    this.cloudDevices = [device];
+    return this.cloudState();
+  }
+
+  private cloudState() {
+    return { ...this.cloudAccount };
   }
 
   async invoke(command: string, args?: Record<string, unknown>): Promise<unknown> {
@@ -526,6 +594,7 @@ export class FakeBackend {
         return {
           searchProvider: this.settings.searchProvider,
           hasBraveApiKey: Boolean(this.settings.braveApiKey),
+          aiMode: this.settings.aiMode,
         };
       case "settings_update": {
         if (typeof input.searchProvider === "string") {
@@ -534,11 +603,98 @@ export class FakeBackend {
         if (typeof input.braveApiKey === "string" && input.braveApiKey) {
           this.settings.braveApiKey = input.braveApiKey;
         }
+        if (typeof input.aiMode === "string") {
+          this.settings.aiMode = input.aiMode;
+        }
         return {
           searchProvider: this.settings.searchProvider,
           hasBraveApiKey: Boolean(this.settings.braveApiKey),
+          aiMode: this.settings.aiMode,
         };
       }
+      case "cloud_account_state":
+        return this.cloudState();
+      case "cloud_register": {
+        const email = String(input.email ?? "").trim();
+        const password = String(input.password ?? "");
+        if (!email.includes("@") || password.length < 8) {
+          throw { code: "INVALID_INPUT", message: "invalid credentials", retryable: false };
+        }
+        this.cloudCredentials.set(email, password);
+        return this.cloudLoginSuccess(email);
+      }
+      case "cloud_login": {
+        const email = String(input.email ?? "").trim();
+        const password = String(input.password ?? "");
+        if (this.cloudCredentials.get(email) !== password) {
+          throw { code: "CLOUD_AUTH_ERROR", message: "invalid email or password", retryable: false };
+        }
+        return this.cloudLoginSuccess(email);
+      }
+      case "cloud_logout":
+        this.cloudAccount = {
+          loggedIn: false,
+          email: null,
+          plan: null,
+          entitlements: null,
+          device: null,
+          syncEnabled: this.cloudAccount.syncEnabled,
+          baseUrl: this.cloudAccount.baseUrl,
+        };
+        this.cloudDevices = [];
+        return this.cloudState();
+      case "cloud_get_me":
+        return {
+          id: "00000000-0000-0000-0000-000000000001",
+          email: this.cloudAccount.email ?? "demo@verruckt.local",
+          displayName: null,
+          createdAt: NOW,
+        };
+      case "cloud_get_entitlements":
+        if (!this.cloudAccount.entitlements) {
+          throw { code: "CLOUD_AUTH_ERROR", message: "not logged in", retryable: false };
+        }
+        return this.cloudAccount.entitlements;
+      case "cloud_list_devices":
+        return this.cloudDevices;
+      case "cloud_remove_device":
+        this.cloudDevices = this.cloudDevices.filter((device) => device.id !== id);
+        return null;
+      case "cloud_get_ai_usage":
+        return this.cloudUsage;
+      case "cloud_set_base_url":
+        this.cloudAccount.baseUrl = String(args?.url ?? this.cloudAccount.baseUrl);
+        return this.cloudState();
+      case "cloud_set_sync_enabled":
+        this.cloudAccount.syncEnabled = Boolean(args?.enabled);
+        return this.cloudState();
+      case "sync_status":
+        return {
+          loggedIn: this.cloudAccount.loggedIn,
+          syncEnabled: this.cloudAccount.syncEnabled,
+          cloudSyncEntitled: Boolean(
+            (this.cloudAccount.entitlements as { cloudSync?: boolean } | null)?.cloudSync,
+          ),
+          bootstrapDone: this.cloudAccount.loggedIn && this.cloudAccount.syncEnabled,
+          pendingChanges: 0,
+          openConflicts: 0,
+          cursor: "",
+          lastPushAt: NOW,
+          lastPullAt: NOW,
+          lastError: null,
+        };
+      case "sync_now":
+        return {
+          pushed: 0,
+          pulled: 0,
+          conflicts: 0,
+          skipped: !this.cloudAccount.syncEnabled,
+          reason: this.cloudAccount.syncEnabled ? null : "sync_disabled",
+        };
+      case "sync_conflicts":
+        return [];
+      case "sync_files_now":
+        return { uploaded: 0, downloaded: 0, reindexSourceIds: [] };
       case "provider_list":
         return this.providers.map((provider) => ({
           id: provider.id,
