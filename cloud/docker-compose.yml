@@ -1,0 +1,82 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: verruckt
+      POSTGRES_PASSWORD: verruckt
+      POSTGRES_DB: verruckt
+    ports:
+      - "5432:5432"
+    volumes:
+      - verruckt_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U verruckt -d verruckt"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: quay.io/minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - verruckt_minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  verruckt-cloud:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      VERRUCKT_ENV: development
+      VERRUCKT_BIND: 0.0.0.0
+      VERRUCKT_PORT: 8080
+      VERRUCKT_LOG_FORMAT: text
+      DATABASE_URL: postgres://verruckt:verruckt@postgres:5432/verruckt
+      VERRUCKT_ACCESS_TOKEN_SECRET: ${VERRUCKT_ACCESS_TOKEN_SECRET:-dev-only-change-me-access-secret}
+      VERRUCKT_OBJECT_STORAGE_ENDPOINT: http://host.docker.internal:9000
+      VERRUCKT_OBJECT_STORAGE_REGION: us-east-1
+      VERRUCKT_OBJECT_STORAGE_BUCKET: verruckt-cloud
+      VERRUCKT_OBJECT_STORAGE_ACCESS_KEY: ${VERRUCKT_OBJECT_STORAGE_ACCESS_KEY:-minioadmin}
+      VERRUCKT_OBJECT_STORAGE_SECRET_KEY: ${VERRUCKT_OBJECT_STORAGE_SECRET_KEY:-minioadmin}
+      VERRUCKT_OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
+      VERRUCKT_OBJECT_STORAGE_PRESIGN_TTL_SECS: "900"
+      VERRUCKT_UPSTREAM_BASE_URL: ${VERRUCKT_UPSTREAM_BASE_URL:-}
+      VERRUCKT_UPSTREAM_API_KEY: ${VERRUCKT_UPSTREAM_API_KEY:-}
+      VERRUCKT_UPSTREAM_CHAT_MODEL: ${VERRUCKT_UPSTREAM_CHAT_MODEL:-gpt-4o-mini}
+      VERRUCKT_UPSTREAM_REASONING_MODEL: ${VERRUCKT_UPSTREAM_REASONING_MODEL:-gpt-4o}
+      VERRUCKT_UPSTREAM_EMBEDDING_MODEL: ${VERRUCKT_UPSTREAM_EMBEDDING_MODEL:-text-embedding-3-small}
+      VERRUCKT_MODEL_FAST: ${VERRUCKT_MODEL_FAST:-gpt-4o-mini}
+      VERRUCKT_MODEL_STANDARD: ${VERRUCKT_MODEL_STANDARD:-gpt-4o-mini}
+      VERRUCKT_MODEL_REASONING: ${VERRUCKT_MODEL_REASONING:-gpt-4o}
+      VERRUCKT_MODEL_EMBEDDING: ${VERRUCKT_MODEL_EMBEDDING:-text-embedding-3-small}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  verruckt_postgres_data:
+  verruckt_minio_data:
