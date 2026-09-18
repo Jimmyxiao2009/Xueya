@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   api,
+  cancelTutorStream,
   errorOf,
   type AdaptationEvent,
   type Lesson,
@@ -75,6 +76,14 @@ const nextId = () => `m${++messageSeq}`;
 const streamingAvailable =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** The assistant message id of the in-flight tutor stream, if any. */
+let activeStreamId: string | null = null;
+
+function stopActiveStream(): void {
+  if (activeStreamId) cancelTutorStream(activeStreamId);
+  activeStreamId = null;
+}
+
 function tutorNote(turn: TutorTurn): string | undefined {
   if (turn.adaptation?.kind === "review_inserted") {
     return "已在你的路线里插入一节针对性加练";
@@ -135,6 +144,7 @@ export const useLearningStore = create<LearningState>((set, get) => ({
   reviewing: false,
 
   start: async (nodeId) => {
+    stopActiveStream();
     set({
       starting: true,
       error: null,
@@ -165,7 +175,8 @@ export const useLearningStore = create<LearningState>((set, get) => ({
     }
   },
 
-  reset: () =>
+  reset: () => {
+    stopActiveStream();
     set({
       sessionId: null,
       nodeId: null,
@@ -182,7 +193,8 @@ export const useLearningStore = create<LearningState>((set, get) => ({
       lastAdaptation: null,
       evaluation: null,
       reviewing: false,
-    }),
+    });
+  },
 
   togglePlan: () => set((state) => ({ planExpanded: !state.planExpanded })),
 
@@ -299,25 +311,81 @@ export const useLearningStore = create<LearningState>((set, get) => ({
     try {
       if (streamingAvailable) {
         const assistantId = nextId();
+        activeStreamId = assistantId;
         set((state) => ({
           messages: [
             ...state.messages,
             { id: assistantId, role: "assistant", kind: "text", text: "" },
           ],
         }));
-        const turn = await api.tutorSendStream(
-          { sessionId, message: trimmed, requestId: assistantId },
-          (event) => {
-            if (event.type !== "delta") return;
-            set((state) => ({
-              messages: state.messages.map((message) =>
-                message.id === assistantId
-                  ? { ...message, text: message.text + event.text }
-                  : message,
-              ),
-            }));
-          },
-        );
+
+        // Coalesce SSE deltas instead of re-rendering on every token. A frame
+        // is the smoothest choice; reduced motion and non-rAF environments use
+        // a 40 ms timer, inside the 30-50 ms budget.
+        let buffer = "";
+        let scheduled = false;
+        let frame: number | null = null;
+        let timeout: number | null = null;
+        const flush = () => {
+          if (!buffer) return;
+          const chunk = buffer;
+          buffer = "";
+          if (activeStreamId !== assistantId) return;
+          set((state) => ({
+            messages: state.messages.map((message) =>
+              message.id === assistantId ? { ...message, text: message.text + chunk } : message,
+            ),
+          }));
+        };
+        const scheduleFlush = () => {
+          if (scheduled) return;
+          scheduled = true;
+          const run = () => {
+            scheduled = false;
+            frame = null;
+            timeout = null;
+            flush();
+          };
+          const reduceMotion =
+            typeof window.matchMedia === "function" &&
+            window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+          if (!reduceMotion && typeof window.requestAnimationFrame === "function") {
+            frame = window.requestAnimationFrame(run);
+          } else {
+            timeout = window.setTimeout(run, 40);
+          }
+        };
+        const stopFlush = () => {
+          scheduled = false;
+          if (frame !== null && typeof window.cancelAnimationFrame === "function") {
+            window.cancelAnimationFrame(frame);
+          }
+          if (timeout !== null) window.clearTimeout(timeout);
+          frame = null;
+          timeout = null;
+        };
+
+        let turn: TutorTurn | null = null;
+        let streamError: unknown = null;
+        try {
+          turn = await api.tutorSendStream(
+            { sessionId, message: trimmed, requestId: assistantId },
+            (event) => {
+              if (event.type !== "delta") return;
+              if (activeStreamId !== assistantId) return;
+              buffer += event.text;
+              scheduleFlush();
+            },
+          );
+        } catch (error) {
+          streamError = error;
+        } finally {
+          stopFlush();
+          flush();
+          if (activeStreamId === assistantId) activeStreamId = null;
+        }
+        if (streamError) throw streamError;
+        if (!turn) return;
         set((state) => ({
           messages: state.messages.map((message) =>
             message.id === assistantId

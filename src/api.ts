@@ -40,6 +40,88 @@ export interface ProviderCapabilities {
   probeErrors: string[];
 }
 
+export interface CloudEntitlements {
+  cloudSync: boolean;
+  officialAi: boolean;
+  maxDevices: number;
+  monthlyAiCredits: number;
+  storageBytes: number;
+  devicesUsed: number;
+  monthlyAiCreditsUsed: number;
+  cloudStorageBytesUsed: number;
+  plan: string;
+}
+
+export interface CloudDevice {
+  id: string;
+  name: string;
+  platform: string;
+  appVersion: string;
+  createdAt: string;
+  lastSeenAt: string;
+}
+
+export interface CloudAccountState {
+  loggedIn: boolean;
+  email?: string | null;
+  userId?: string | null;
+  plan?: string | null;
+  entitlements?: CloudEntitlements | null;
+  device?: CloudDevice | null;
+  syncEnabled: boolean;
+  baseUrl: string;
+}
+
+export interface CloudMe {
+  id: string;
+  email: string;
+  displayName?: string | null;
+  createdAt: string;
+}
+
+export interface CloudUsage {
+  periodStart: string;
+  creditsUsed: number;
+  creditsLimit: number;
+  creditsRemaining: number;
+}
+
+export interface SyncStatus {
+  loggedIn: boolean;
+  syncEnabled: boolean;
+  cloudSyncEntitled: boolean;
+  bootstrapDone: boolean;
+  pendingChanges: number;
+  openConflicts: number;
+  cursor: string;
+  lastPushAt?: string | null;
+  lastPullAt?: string | null;
+  lastError?: string | null;
+}
+
+export interface SyncSummary {
+  pushed: number;
+  pulled: number;
+  conflicts: number;
+  skipped: boolean;
+  reason?: string | null;
+}
+
+export interface SyncConflict {
+  id: string;
+  entityType: string;
+  entityId: string;
+  serverRevision: number;
+  clientRevision: number;
+  createdAt: string;
+}
+
+export interface FileSyncSummary {
+  uploaded: number;
+  downloaded: number;
+  reindexSourceIds: string[];
+}
+
 export interface Source {
   id: string;
   kind: string;
@@ -301,12 +383,44 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
   }
 }
 
+export interface SettingsShape {
+  searchProvider: string;
+  hasBraveApiKey: boolean;
+  aiMode: string;
+}
+
+/** Active tutor stream listeners, keyed by request id, so a screen can unsubscribe on leave. */
+const tutorStreamCancels = new Map<string, () => void>();
+
+/** Removes the `tutor_stream` listener for a request id immediately. */
+export function cancelTutorStream(requestId: string): void {
+  tutorStreamCancels.get(requestId)?.();
+}
+
 export const api = {
   bootstrap: () => call<AppInfo>("app_bootstrap"),
   info: () => call<AppInfo>("app_get_info"),
-  settingsGet: () => call<{ searchProvider: string; hasBraveApiKey: boolean }>("settings_get"),
-  settingsUpdate: (input: { searchProvider?: string; braveApiKey?: string }) =>
-    call<{ searchProvider: string; hasBraveApiKey: boolean }>("settings_update", { input }),
+  settingsGet: () => call<SettingsShape>("settings_get"),
+  settingsUpdate: (input: { searchProvider?: string; braveApiKey?: string; aiMode?: string }) =>
+    call<SettingsShape>("settings_update", { input }),
+  cloudAccountState: () => call<CloudAccountState>("cloud_account_state"),
+  cloudRegister: (input: { email: string; password: string }) =>
+    call<CloudAccountState>("cloud_register", { input }),
+  cloudLogin: (input: { email: string; password: string }) =>
+    call<CloudAccountState>("cloud_login", { input }),
+  cloudLogout: () => call<CloudAccountState>("cloud_logout"),
+  cloudGetMe: () => call<CloudMe>("cloud_get_me"),
+  cloudGetEntitlements: () => call<CloudEntitlements>("cloud_get_entitlements"),
+  cloudListDevices: () => call<CloudDevice[]>("cloud_list_devices"),
+  cloudRemoveDevice: (id: string) => call<void>("cloud_remove_device", { id }),
+  cloudGetAiUsage: () => call<CloudUsage>("cloud_get_ai_usage"),
+  cloudSetBaseUrl: (url: string) => call<CloudAccountState>("cloud_set_base_url", { url }),
+  cloudSetSyncEnabled: (enabled: boolean) =>
+    call<CloudAccountState>("cloud_set_sync_enabled", { enabled }),
+  syncStatus: () => call<SyncStatus>("sync_status"),
+  syncNow: () => call<SyncSummary>("sync_now"),
+  syncConflicts: () => call<SyncConflict[]>("sync_conflicts"),
+  syncFilesNow: () => call<FileSyncSummary>("sync_files_now"),
   providerList: () => call<Provider[]>("provider_list"),
   providerUpsert: (input: {
     id?: string;
@@ -374,6 +488,10 @@ export const api = {
    * Streams a tutor turn. Deltas arrive through the `tutor_stream` event and
    * the resolved value is the same authoritative turn as `tutorSend`, so the
    * caller can replace the buffered text with the final message.
+   *
+   * The listener is removed as soon as the caller leaves the screen (see
+   * `cancelTutorStream`), so late deltas from an abandoned turn never touch the
+   * store.
    */
   tutorSendStream: async (
     input: { sessionId: string; message: string; requestId?: string },
@@ -382,16 +500,24 @@ export const api = {
     const requestId =
       input.requestId ?? `tutor-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const { listen } = await import("@tauri-apps/api/event");
+    let cancelled = false;
     const unlisten = await listen<{ requestId: string; event: AiStreamEvent }>(
       "tutor_stream",
       (event) => {
-        if (event.payload.requestId === requestId) onEvent(event.payload.event);
+        if (!cancelled && event.payload.requestId === requestId) onEvent(event.payload.event);
       },
     );
+    const cancel = () => {
+      if (cancelled) return;
+      cancelled = true;
+      unlisten();
+      tutorStreamCancels.delete(requestId);
+    };
+    tutorStreamCancels.set(requestId, cancel);
     try {
       return await call<TutorTurn>("tutor_send_stream", { input: { ...input, requestId } });
     } finally {
-      unlisten();
+      cancel();
     }
   },
 
