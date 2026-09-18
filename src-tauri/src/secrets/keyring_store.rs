@@ -35,8 +35,15 @@ impl Default for KeyringSecretStore {
 }
 
 fn is_missing(error: &keyring::Error) -> bool {
-    let text = error.to_string().to_ascii_lowercase();
-    text.contains("no entry") || text.contains("not found") || text.contains("not present")
+    is_missing_message(&error.to_string())
+}
+
+fn is_missing_message(message: &str) -> bool {
+    let text = message.to_ascii_lowercase();
+    text.contains("no entry")
+        || text.contains("no matching credential")
+        || text.contains("not found")
+        || text.contains("not present")
 }
 
 #[async_trait]
@@ -135,5 +142,18 @@ impl SecretStore for InMemorySecretStore {
             .read()
             .map_err(|_| AppError::Internal("secret store poisoned".into()))?
             .contains_key(key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_windows_missing_credential_message() {
+        assert!(is_missing_message("No matching credential found"));
+        assert!(is_missing_message("No entry found"));
+        assert!(is_missing_message("credential not present"));
+        assert!(!is_missing_message("access denied"));
     }
 }
