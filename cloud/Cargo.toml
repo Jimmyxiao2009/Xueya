@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/verruckt-cloud-domain",
+    "crates/verruckt-cloud-protocol",
+    "crates/verruckt-cloud-storage",
+    "crates/verruckt-cloud",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/example/verruckt-cloud"
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+argon2 = { version = "0.5.3", features = ["std"] }
+async-stream = "0.3.6"
+axum = { version = "0.8.9", features = ["json", "http1", "tokio"] }
+base64 = "0.22.1"
+bytes = "1.12.1"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.1", features = ["derive", "env"] }
+dotenvy = "0.15.7"
+futures-util = "0.3.34"
+hex = "0.4.3"
+hmac = "0.12.1"
+http = "1.5.0"
+http-body-util = "0.1.5"
+jsonwebtoken = "9.3.1"
+mime = "0.3.17"
+percent-encoding = "2.3.2"
+rand = "0.8.8"
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10.9"
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+thiserror = "2.0.20"
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "net"] }
+tokio-stream = "0.1.19"
+tower = "0.5.3"
+tower-http = { version = "0.6.11", features = ["cors", "limit", "timeout", "trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "fmt"] }
+url = "2.5.8"
+uuid = { version = "1.26.1", features = ["v4", "serde"] }
+zeroize = "1.9.0"
