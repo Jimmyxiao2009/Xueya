@@ -22,6 +22,7 @@ interface SettingsState {
   providers: Provider[];
   searchProvider: string;
   hasBraveApiKey: boolean;
+  aiMode: string;
   loading: boolean;
   error: string | null;
   /** Result of the last `provider_test`, keyed by provider id. */
@@ -31,6 +32,7 @@ interface SettingsState {
   remove: (id: string) => Promise<void>;
   test: (id: string) => Promise<void>;
   saveSearch: (input: { searchProvider?: string; braveApiKey?: string }) => Promise<void>;
+  setAiMode: (mode: string) => Promise<void>;
 }
 
 export const EMPTY_DRAFT: ProviderDraft = {
@@ -53,6 +55,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   providers: [],
   searchProvider: "none",
   hasBraveApiKey: false,
+  aiMode: "offline",
   loading: false,
   error: null,
   probes: {},
@@ -68,6 +71,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         providers,
         searchProvider: settings.searchProvider,
         hasBraveApiKey: settings.hasBraveApiKey,
+        aiMode: settings.aiMode,
         loading: false,
         error: null,
       });
@@ -125,8 +129,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       set({
         searchProvider: result.searchProvider,
         hasBraveApiKey: result.hasBraveApiKey,
+        aiMode: result.aiMode,
         error: null,
       });
+    } catch (error) {
+      set({ error: errorOf(error).message });
+    }
+  },
+
+  setAiMode: async (mode) => {
+    try {
+      const result = await api.settingsUpdate({ aiMode: mode });
+      set({ aiMode: result.aiMode, error: null });
     } catch (error) {
       set({ error: errorOf(error).message });
     }

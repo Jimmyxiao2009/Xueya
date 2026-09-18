@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { CloudAccountSection } from "@/components/settings/CloudAccountSection";
 import { Icon } from "@/components/ui/Icon";
 import { toast } from "@/stores/uiStore";
 import {
@@ -103,16 +104,18 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
       </header>
 
       <main className="create-page scroll-pane">
-        <div className="eyebrow">BRING YOUR OWN KEY</div>
+        <div className="eyebrow">LOCAL FIRST · CLOUD OPTIONAL</div>
         <h1 className="page-title">模型与搜索</h1>
         <p className="subtext">
-          不配置也能用：Orbit 会用本地模型生成路线与题目。配置之后，
-          路线、讲解与题目改由你自己的模型产出。
+          不登录、不配置也能完整学习。登录 Verruckt Cloud 可以使用官方 AI
+          与可选的跨设备同步；也可以继续使用自己的 API 或离线模式。
         </p>
+
+        <CloudAccountSection />
 
         <div className="form-section">
           <div className="row">
-            <h2>模型服务</h2>
+            <h2>自定义模型服务</h2>
             <span className="small">
               {providers.length ? `已配置 ${providers.length} 个` : "尚未配置"}
             </span>
