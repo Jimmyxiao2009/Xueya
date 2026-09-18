@@ -111,8 +111,9 @@
 - [x] PASS `RELEASE_CHECKSUMS.txt`
 - [x] PASS `docs/RC_VALIDATION.md`
 - [x] PASS `docs/COMPETITION_DEMO.md`（含 3–5 分钟现场路径与 emergency fallback）
-- [ ] PENDING 最终 freeze tag `v0.1.0-rc.1-competition`
+- [x] PASS 最终 freeze tag `v0.1.0-rc.1-competition`
 
 ## 非目标
 
 本轮不新增支付、OAuth、CRDT、多租户、数据库架构、页面、RAG 算法或 UI 大改。
+
