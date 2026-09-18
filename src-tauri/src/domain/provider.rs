@@ -35,6 +35,38 @@ impl ProviderProtocol {
     }
 }
 
+/// Which AI source the user chose in Settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, Default)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(rename_all = "snake_case")]
+pub enum AiMode {
+    /// Deterministic local mock. Always available, including offline demos.
+    #[default]
+    Offline,
+    /// The user's own OpenAI-compatible endpoint / API key.
+    Byok,
+    /// Verruckt Cloud official AI gateway.
+    Cloud,
+}
+
+impl AiMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Offline => "offline",
+            Self::Byok => "byok",
+            Self::Cloud => "cloud",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cloud" | "verruckt" | "official" => Self::Cloud,
+            "byok" | "custom" | "custom_api" => Self::Byok,
+            _ => Self::Offline,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ProviderConfig {
     pub id: Uuid,

@@ -1,4 +1,5 @@
 pub mod capabilities;
+pub mod cloud;
 pub mod embedding;
 pub mod endpoint;
 pub mod http;

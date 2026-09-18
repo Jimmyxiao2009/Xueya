@@ -28,6 +28,6 @@ pub use learner::{
 };
 pub use learning::{LearningAttempt, LearningSession, LearningSessionStatus, MasteryState};
 pub use plan::{LessonPhase, LessonStep, LessonStepKind};
-pub use provider::{ProviderConfig, ProviderProtocol};
+pub use provider::{AiMode, ProviderConfig, ProviderProtocol};
 pub use quiz::{grade_locally, QuizAttempt, QuizGrade, QuizKind, QuizQuestion};
 pub use source::{Source, SourceKind, SourceRevision, SourceStatus};
