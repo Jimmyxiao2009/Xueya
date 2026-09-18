@@ -245,6 +245,68 @@ Quiz grading, free-text evaluation and tutor diagnosis all call the same
 `AdaptationService`. A real route change is idempotent per knowledge point and
 review reason, including across a database close/reopen.
 
+### 5.6 Verruckt Cloud as one provider
+
+Verruckt Cloud is not a second AI stack. It is one more implementation behind
+the existing `ChatProvider` / `EmbeddingProvider` traits:
+
+```
+cloud/client.rs          CloudAccountClient: auth, refresh, entitlements,
+                         devices, base URL, sync setting, broadcast events
+cloud/models.rs          CloudAccountState / CloudEntitlements / device DTOs
+cloud/commands.rs        the cloud_* Tauri command surface
+ai/cloud.rs              CloudAiProvider -> /v1/chat/completions and
+                         /v1/embeddings with the current access token
+```
+
+* `AiMode` is `offline | byok | cloud`. `byok` preserves the pre-integration
+  behaviour; `cloud` falls back to BYOK/mock when the session, entitlement or
+  quota is unavailable, so a Cloud failure never blocks learning.
+* Cloud protocol is intentionally **Chat Completions only**. Logical models
+  `verruckt-fast`, `verruckt-standard`, `verruckt-reasoning` and
+  `verruckt-embedding` are mapped by the Cloud gateway to real upstream models.
+* The Cloud provider needs a `providers` row because local embeddings reference
+  `providers(id)`. `ProviderRegistry::ensure_cloud_provider()` upserts that
+  virtual row on first use; it is never shown as a user-configured BYOK service.
+* Access tokens are memory-only. The refresh token lives in the OS keyring and
+  is never sent to the frontend. A single-flight refresh lock refreshes on 401
+  and retries the original request exactly once; an auth failure clears the
+  session and emits `cloud_signed_out`.
+
+### 5.7 Local-first delta sync
+
+Sync is authoritative-state only, with the Cloud as a relay, never the source
+of truth for learning:
+
+* SQLite triggers journal authoritative writes into `sync_outbox` in the same
+  transaction as the write. Derived data (chunks, embeddings, FTS, caches) is
+  never synced and is rebuilt locally.
+* `sync_apply_guard` stops pulled writes from re-entering the outbox.
+  `schema_version = 1` is carried in every payload.
+* Local UUIDs are stored as BLOBs by sqlx; the sync journal normalises them to
+  lowercase hex text and the adapters bind them back as UUIDs. Composite local
+  ids (`course_node_dependency`, `node_knowledge_point`, `learner_state`) map to
+  deterministic UUIDv5 ids.
+* Bootstrap and pull apply in foreign-key-safe order. A server revision that
+  differs from the local base revision records a row in `sync_conflicts` and
+  leaves the local row untouched; an open conflict also blocks later pulls for
+  that entity, so the user never gets a silent overwrite.
+* Sync triggers are debounced on startup, foreground/manual, and periodically;
+  manual controls live in Settings. Failure is non-fatal and surfaced as
+  friendly copy.
+
+### 5.8 Source files through object storage
+
+Source blobs are too large for the delta journal:
+
+* `sync/files.rs` requests a presigned upload, PUTs the bytes directly to
+  MinIO/S3, records the Cloud file id on the revision, and later presigns a
+  download on another device.
+* Both directions verify SHA-256 before trusting the bytes. Local blobs remain
+  content-addressed, so the same bytes are deduplicated.
+* Pulling a source revision only schedules a local re-index; chunks and
+  embeddings are rebuilt on the receiving device.
+
 ---
 
 ## 6. Frontend architecture notes
@@ -331,8 +393,9 @@ pass vacuously.
 
 | Layer | Where | What it proves |
 | --- | --- | --- |
-| Rust unit | `src-tauri/src/**` (42 tests) | repo CRUD, migrations, planner, grading, mastery, chunking, hashing |
-| Rust integration | `src-tauri/tests/learning_loop.rs` (10 tests) | the loop end to end against a real SQLite file |
+| Rust unit | `src-tauri/src/**` (67 tests) | repo CRUD, migrations, planner, grading, mastery, chunking, hashing, sync journal/adapters |
+| Rust integration | `src-tauri/tests/learning_loop.rs` (14), `provider_compat.rs` (8), `retrieval.rs` (4), `cloud_client.rs` (7) | the learning loop, provider protocol matrix, hybrid retrieval, and Cloud session/refresh/error/provider gating against a loopback mock |
+| Rust Cloud E2E | `src-tauri/tests/cloud_live.rs` (1 ignored by default) | real desktop → Docker Compose Cloud → mock OpenAI upstream: account, Cloud AI, embeddings, delta sync A→B, conflict preservation, file upload/download, restart persistence |
 | Contract | `src/test/ipc-contract.test.ts` (3 tests) | command names agree across `api.ts`, `lib.rs` and the fake backend |
 | Frontend | `src/test/app.test.tsx` (14 tests) | route switching, lesson open/close, quiz submit (correct / wrong / ungraded), model review of a free-text answer, route creation, web collection, BYOK save (key never echoed), source library, tutor adaptation |
 | Frontend unit | `src/lib/design.test.ts` (13 tests) | road geometry, drag physics, release timing, clip math, node faces |
@@ -350,9 +413,11 @@ title) and both are real screens, not stubs:
 
 * **资料库** (`screens/SourcesScreen.tsx`) — lists every source a route can
   cite, with re-index and delete.
-* **设置** (`screens/SettingsScreen.tsx`) — BYOK: add / edit / test / remove a
-  model service (base URL, chat model, embedding model, API key) and choose the
-  web search provider. The key field is write-only and never prefilled.
+* **设置** (`screens/SettingsScreen.tsx`) — AI source (Cloud / BYOK / offline),
+  Verruckt Cloud account, entitlements, devices, Cloud Sync toggle and manual
+  sync, plus BYOK add / edit / test / remove and the web search provider. The
+  key field is write-only and never prefilled; the Cloud refresh token is never
+  returned by any command.
 
 ## 9. Known gaps
 
@@ -370,3 +435,12 @@ These are real and unfinished:
 * Bundling is configured (`bundle.targets: "all"`) but only `--no-bundle` builds
   have been run in this environment, because the MSI/NSIS toolchain is not
   available offline.
+* The live Cloud E2E is opt-in (`cargo test --test cloud_live -- --ignored`);
+  it needs Docker Compose and a fresh pro account. A real WebView smoke against
+  Cloud is not automated here.
+* Sync conflict resolution currently preserves the local row and records the
+  server payload. The UI warns about the open conflict but does not yet offer a
+  side-by-side merge/choose-server action.
+* Cloud AI streaming uses the same incremental stream path as BYOK, but the
+  live Cloud E2E exercises non-streaming chat and embeddings; the SSE path is
+  covered by the Cloud workspace integration test and the frontend unit path.

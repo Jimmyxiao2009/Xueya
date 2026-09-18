@@ -58,6 +58,13 @@ the same shape.
 | `AI_RESPONSE_INVALID` | model output failed schema validation | no |
 | `JOB_CANCELLED` | job cancelled by the user | no |
 | `UNSUPPORTED_FORMAT` | file type not supported | no |
+| `CLOUD_AUTH_ERROR` | Cloud rejected credentials | no |
+| `CLOUD_ENTITLEMENT_REQUIRED` | plan does not include the feature | no |
+| `CLOUD_QUOTA_EXCEEDED` | monthly AI credits exhausted | no |
+| `CLOUD_STORAGE_QUOTA_EXCEEDED` | Cloud storage quota exhausted | no |
+| `CLOUD_SYNC_CONFLICT` | a sync revision conflict was recorded | no |
+| `CLOUD_UNAVAILABLE` | Cloud or upstream gateway unavailable | yes |
+| `CLOUD_SESSION_EXPIRED` | refresh token is no longer valid | no |
 | `INTERNAL_ERROR` | anything else | no |
 
 ### Secret redaction
@@ -78,8 +85,8 @@ through `redact()`, which strips anything shaped like a key, bearer token or
 | --- | --- | --- |
 | `app_bootstrap` | — | `AppInfo` — runs migrations, seeds the demo routes, then returns |
 | `app_get_info` | — | `AppInfo` |
-| `settings_get` | — | `{ searchProvider: string; hasBraveApiKey: boolean }` |
-| `settings_update` | `{ input: { searchProvider?: string; braveApiKey?: string } }` | same as `settings_get` |
+| `settings_get` | — | `{ searchProvider: string; hasBraveApiKey: boolean; aiMode: "offline" \| "byok" \| "cloud" }` |
+| `settings_update` | `{ input: { searchProvider?: string; braveApiKey?: string; aiMode?: "offline" \| "byok" \| "cloud" } }` | same as `settings_get` |
 
 ```ts
 interface AppInfo {
@@ -95,6 +102,68 @@ interface AppInfo {
 `app_bootstrap` is idempotent: the two demo routes (射影几何, 线性代数) are only
 inserted when `courses.seeded` is empty, so they exist on first launch and are
 never re-created after the user deletes them.
+
+### Verruckt Cloud
+
+| Command | Args | Returns |
+| --- | --- | --- |
+| `cloud_account_state` | — | `CloudAccountState` |
+| `cloud_register` | `{ input: { email, password } }` | `CloudAccountState` |
+| `cloud_login` | `{ input: { email, password } }` | `CloudAccountState` |
+| `cloud_logout` | — | `CloudAccountState` |
+| `cloud_get_me` | — | `CloudMe` |
+| `cloud_get_entitlements` | — | `CloudEntitlements` |
+| `cloud_list_devices` | — | `CloudDevice[]` |
+| `cloud_remove_device` | `{ id }` | `void` |
+| `cloud_get_ai_usage` | — | `CloudUsage` |
+| `cloud_set_base_url` | `{ url }` | `CloudAccountState` |
+| `cloud_set_sync_enabled` | `{ enabled }` | `CloudAccountState` |
+| `sync_status` | — | `SyncStatus` |
+| `sync_now` | — | `SyncSummary` |
+| `sync_conflicts` | — | `SyncConflict[]` |
+| `sync_files_now` | — | `FileSyncSummary` |
+
+```ts
+interface CloudAccountState {
+  loggedIn: boolean;
+  email?: string | null;
+  userId?: string | null;
+  plan?: string | null;
+  entitlements?: CloudEntitlements | null;
+  device?: CloudDevice | null;
+  syncEnabled: boolean;
+  baseUrl: string;
+}
+
+interface CloudEntitlements {
+  plan: string;
+  features: Record<string, boolean>; // cloud_sync, official_ai, ...
+  limits: Record<string, number>;    // max_devices, monthly_ai_credits, ...
+  usage: {
+    devicesUsed: number;
+    monthlyAiCreditsUsed: number;
+    cloudStorageBytesUsed: number;
+  };
+}
+
+interface SyncSummary {
+  pushed: number;
+  pulled: number;
+  conflicts: number;
+  skipped: boolean;
+  reason?: string | null;
+}
+
+interface FileSyncSummary {
+  uploaded: number;
+  downloaded: number;
+  reindexSourceIds: string[];
+}
+```
+
+Cloud session state emits `cloud_signed_out`, `cloud_session_changed` and
+`cloud_sync_setting_changed`. Access/refresh tokens are never part of any DTO.
+See `docs/CLOUD_INTEGRATION.md` for the full protocol and sync semantics.
 
 ### Providers (BYOK)
 
