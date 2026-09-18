@@ -44,8 +44,11 @@ pdf-extract = "0.12"
 zip = "2"
 quick-xml = "0.37"
 keyring = "4"
+ring = "0.17"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
 tauri-plugin-window-state = "2"
 
 [dev-dependencies]

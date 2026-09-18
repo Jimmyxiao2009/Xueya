@@ -6,7 +6,9 @@ use crate::jobs::manager::JobManager;
 use crate::knowledge::vector_index::{SqliteVectorIndex, VectorIndex};
 use crate::knowledge_fs::blob_store::BlobStore;
 use crate::search::SearchProviderRegistry;
-use crate::secrets::keyring_store::{KeyringSecretStore, SecretStore};
+#[cfg(not(target_os = "android"))]
+use crate::secrets::keyring_store::KeyringSecretStore;
+use crate::secrets::keyring_store::SecretStore;
 use crate::sync::{CloudFileSyncService, CloudSyncService};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
@@ -56,7 +58,15 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new(paths: AppPaths) -> Result<Self, AppError> {
-        Self::new_with_secrets(paths, Arc::new(KeyringSecretStore::new())).await
+        #[cfg(not(target_os = "android"))]
+        let secrets: Arc<dyn SecretStore> = Arc::new(KeyringSecretStore::new());
+
+        #[cfg(target_os = "android")]
+        let secrets: Arc<dyn SecretStore> = Arc::new(
+            crate::secrets::encrypted_store::EncryptedSecretStore::new(&paths.app_data_dir)?
+        );
+
+        Self::new_with_secrets(paths, secrets).await
     }
 
     pub async fn new_with_secrets(
