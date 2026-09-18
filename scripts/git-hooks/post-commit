@@ -23,6 +23,8 @@ if [ -d "$work" ]; then
   current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
   git --git-dir="$bare" --work-tree="$work" checkout -f "$current_branch" 2>/dev/null || \
   git --git-dir="$bare" --work-tree="$work" checkout -f main 2>/dev/null
+  git --git-dir="$bare" --work-tree="$work" reset --hard "$current_branch" 2>/dev/null || \
+  git --git-dir="$bare" --work-tree="$work" reset --hard main 2>/dev/null
   echo "post-commit: updated $work (branch: $current_branch)"
 fi
 
