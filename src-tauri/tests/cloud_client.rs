@@ -524,6 +524,52 @@ async fn cloud_ai_provider_gates_entitlement_and_quota_without_calling_upstream(
     );
 }
 
+#[tokio::test]
+async fn transient_restore_failure_keeps_the_refresh_token() {
+    let server = MockServer::start(vec![
+        MockResponse::json(200, auth_body("access-1", "refresh-1")),
+        MockResponse::json(200, json!({ "user": user_body() }).to_string()),
+        MockResponse::json(200, entitlements_body(true, 0, 1000)),
+        // A fresh client restores from the keyring, refreshes successfully,
+        // then hits a transient upstream failure while loading `/me`.
+        MockResponse::json(200, auth_body("access-2", "refresh-2")),
+        MockResponse::json(
+            503,
+            error_body("upstream_unavailable", "upstream is restarting"),
+        ),
+    ]);
+    let (state, dir) = test_pool().await;
+    let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
+
+    let first = CloudAccountClient::new(
+        reqwest::Client::new(),
+        secrets.clone(),
+        state.pool.clone(),
+        server.base_url(),
+    );
+    first
+        .login("e2e@example.com".to_owned(), "password123".to_owned())
+        .await
+        .expect("login");
+
+    let restarted = CloudAccountClient::new(
+        reqwest::Client::new(),
+        secrets.clone(),
+        state.pool.clone(),
+        server.base_url(),
+    );
+    let account = restarted.account_state().await.expect("account state");
+    assert!(!account.logged_in);
+    assert!(
+        secrets
+            .secret_exists(REFRESH_TOKEN_REF)
+            .await
+            .expect("secret lookup"),
+        "a transient failure must not delete the refresh token"
+    );
+    std::mem::forget(dir);
+}
+
 #[allow(dead_code)]
 fn _assert_secret_ref_is_public() {
     // Keeps the REFRESH_TOKEN_REF import meaningful if the test body changes.

@@ -253,18 +253,24 @@ impl CloudAccountClient {
         }
         if let Err(error) = self.access_token().await {
             tracing::warn!(%error, "could not restore the Verruckt Cloud session");
-            self.clear_session().await;
+            if is_auth_error(&error) {
+                self.clear_session().await;
+            }
             return Ok(false);
         }
         // Populate the non-secret account state.
         if let Err(error) = self.refresh_me().await {
             tracing::warn!(%error, "could not load the Verruckt Cloud account");
-            self.clear_session().await;
+            if is_auth_error(&error) {
+                self.clear_session().await;
+            }
             return Ok(false);
         }
         if let Err(error) = self.refresh_entitlements().await {
             tracing::warn!(%error, "could not load Verruckt Cloud entitlements");
-            self.clear_session().await;
+            if is_auth_error(&error) {
+                self.clear_session().await;
+            }
             return Ok(false);
         }
         Ok(true)
@@ -552,6 +558,15 @@ impl CloudAccountClient {
             payload,
         });
     }
+}
+
+/// Only credential/session failures may delete the refresh token. Transient
+/// network or gateway failures must keep it so offline learning can continue.
+fn is_auth_error(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::CloudAuth(_) | AppError::CloudSessionExpired
+    )
 }
 
 fn validate_credentials(email: &str, password: &str) -> Result<(), AppError> {
