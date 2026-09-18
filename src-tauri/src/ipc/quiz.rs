@@ -1,9 +1,11 @@
-use super::dto::{AdaptationEventDto, QuizQuestionDto, QuizResultDto, QuizSubmitInput};
+use super::dto::{
+    route_adapted_payload, AdaptationEventDto, QuizQuestionDto, QuizResultDto, QuizSubmitInput,
+};
 use crate::db::repo::learning_loop as loop_repo;
 use crate::error::AppError;
 use crate::services::quiz_service::QuizService;
 use crate::state::AppState;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 #[tauri::command]
@@ -22,12 +24,19 @@ pub async fn quiz_list(
 /// answered, so the UI can label it honestly.
 #[tauri::command]
 pub async fn quiz_submit(
+    app: AppHandle,
     state: State<'_, AppState>,
     input: QuizSubmitInput,
 ) -> Result<QuizResultDto, AppError> {
     let outcome = QuizService::new(&state)
         .submit(input.question_id, input.answer, input.session_id)
         .await?;
+    if let Some(event) = &outcome.adaptation {
+        let _ = app.emit(
+            "route_adapted",
+            route_adapted_payload(event, outcome.inserted_node_id),
+        );
+    }
     let question = loop_repo::get_quiz_question(&state.pool, input.question_id).await?;
     Ok(QuizResultDto {
         question_id: input.question_id,

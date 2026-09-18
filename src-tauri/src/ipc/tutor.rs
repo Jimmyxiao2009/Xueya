@@ -1,6 +1,6 @@
 use super::dto::{
-    AdaptationEventDto, DiagnosisDto, TutorCitationDto, TutorStreamInput, TutorTurnDto,
-    TutorTurnInput,
+    route_adapted_payload, AdaptationEventDto, DiagnosisDto, TutorCitationDto, TutorStreamInput,
+    TutorTurnDto, TutorTurnInput,
 };
 use crate::ai::stream::AiStreamEvent;
 use crate::error::AppError;
@@ -12,12 +12,19 @@ use tokio::sync::mpsc;
 
 #[tauri::command]
 pub async fn tutor_send(
+    app: AppHandle,
     state: State<'_, AppState>,
     input: TutorTurnInput,
 ) -> Result<TutorTurnDto, AppError> {
     let turn = TutorService::new(&state)
         .turn(input.session_id, &input.message)
         .await?;
+    if let Some(event) = &turn.adaptation {
+        let _ = app.emit(
+            "route_adapted",
+            route_adapted_payload(event, turn.inserted_node_id),
+        );
+    }
     Ok(tutor_turn_dto(turn))
 }
 
@@ -53,6 +60,12 @@ pub async fn tutor_send_stream(
         .await;
     let _ = forwarder.await;
     let turn = result?;
+    if let Some(event) = &turn.adaptation {
+        let _ = app.emit(
+            "route_adapted",
+            route_adapted_payload(event, turn.inserted_node_id),
+        );
+    }
     Ok(tutor_turn_dto(turn))
 }
 

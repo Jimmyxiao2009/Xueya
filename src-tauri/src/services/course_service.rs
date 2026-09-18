@@ -826,6 +826,7 @@ impl<'a> CourseService<'a> {
                 "dependencies": [after_node_id],
                 "knowledgePointId": point_id,
                 "insertedFor": after_node_id,
+                "insertAfterNodeId": after_node_id,
                 "reason": reason,
             })
             .to_string(),

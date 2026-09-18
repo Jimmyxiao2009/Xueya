@@ -1,6 +1,6 @@
 [package]
 name = "verruckt"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 description = "Local-first BYOK AI self-study workbench."
 authors = ["Verruckt"]
 edition = "2021"

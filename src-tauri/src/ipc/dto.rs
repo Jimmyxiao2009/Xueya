@@ -775,6 +775,25 @@ impl From<&crate::domain::AdaptationEvent> for AdaptationEventDto {
     }
 }
 
+/// Product-level event emitted when a roadmap really changes.
+///
+/// The raw AI reasoning is intentionally not forwarded: `reason` is the short
+/// learner-facing explanation stored on the adaptation row.
+pub fn route_adapted_payload(
+    event: &crate::domain::AdaptationEvent,
+    inserted_node_id: Option<Uuid>,
+) -> serde_json::Value {
+    let payload: serde_json::Value = serde_json::from_str(&event.payload_json).unwrap_or_default();
+    serde_json::json!({
+        "route_id": event.course_id,
+        "new_node_id": inserted_node_id,
+        "reason": event.reason,
+        "knowledge_point": payload.get("knowledgePointId").cloned().unwrap_or(serde_json::Value::Null),
+        "title": payload.get("title").cloned().unwrap_or(serde_json::Value::Null),
+        "insert_after_node_id": event.node_id,
+    })
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TutorTurnInput {
@@ -797,6 +816,9 @@ pub struct TutorCitationDto {
     pub chunk_id: Uuid,
     pub source_id: Uuid,
     pub source_title: String,
+    pub source_kind: String,
+    pub source_uri: Option<String>,
+    pub source_filename: Option<String>,
     pub text: String,
 }
 
@@ -806,6 +828,9 @@ impl From<&crate::services::tutor_service::TutorCitation> for TutorCitationDto {
             chunk_id: value.chunk_id,
             source_id: value.source_id,
             source_title: value.source_title.clone(),
+            source_kind: value.source_kind.clone(),
+            source_uri: value.source_uri.clone(),
+            source_filename: value.source_filename.clone(),
             text: value.text.clone(),
         }
     }

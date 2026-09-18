@@ -1,5 +1,6 @@
 pub mod app;
 pub mod courses;
+pub mod demo;
 pub mod dto;
 pub mod jobs;
 pub mod knowledge;

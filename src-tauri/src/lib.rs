@@ -29,6 +29,7 @@ use ipc::{
         course_adaptations, course_create, course_delete, course_get, course_learner_states,
         course_list, course_node_complete, course_node_get, course_node_prepare, course_regenerate,
     },
+    demo::competition_demo_seed,
     jobs::{job_cancel, job_get, job_list, job_subscribe},
     knowledge::{
         knowledge_get_object, knowledge_get_related, knowledge_retrieval_debug, knowledge_search,
@@ -133,6 +134,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_bootstrap,
             app_get_info,
+            competition_demo_seed,
             cloud_account_state,
             cloud_register,
             cloud_login,

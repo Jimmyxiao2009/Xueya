@@ -62,6 +62,9 @@ pub struct TutorCitation {
     pub chunk_id: Uuid,
     pub source_id: Uuid,
     pub source_title: String,
+    pub source_kind: String,
+    pub source_uri: Option<String>,
+    pub source_filename: Option<String>,
     pub text: String,
 }
 
@@ -573,6 +576,9 @@ fn build_label_map(
                 } else {
                     hit.source_title.clone()
                 },
+                source_kind: hit.source_kind.clone(),
+                source_uri: hit.source_uri.clone(),
+                source_filename: hit.source_filename.clone(),
                 text: hit.text.clone(),
             },
         );
@@ -698,3 +704,84 @@ pub async fn record_usage(
 
 #[allow(dead_code)]
 fn _assert_chat_provider_is_object_safe(_: Arc<dyn ChatProvider>) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn citation(title: &str, text: &str) -> TutorCitation {
+        TutorCitation {
+            chunk_id: Uuid::new_v4(),
+            source_id: Uuid::new_v4(),
+            source_title: title.to_owned(),
+            source_kind: "file".to_owned(),
+            source_uri: None,
+            source_filename: Some("fixture.md".to_owned()),
+            text: text.to_owned(),
+        }
+    }
+
+    fn reply(message: &str, citations: Vec<&str>) -> TutorReply {
+        TutorReply {
+            message: message.to_owned(),
+            citations: citations.into_iter().map(str::to_owned).collect(),
+            suggested_action: "continue".to_owned(),
+            grounding: None,
+            diagnosis: None,
+        }
+    }
+
+    #[test]
+    fn resolve_citations_drops_unknown_labels_and_deduplicates() {
+        let first = citation("射影平面笔记", "无穷远点是方向的抽象。");
+        let second = citation("齐次坐标", "第三个坐标为 0 表示无穷远点。");
+        let mut map = HashMap::new();
+        map.insert("C1".to_owned(), first.clone());
+        map.insert("C2".to_owned(), second.clone());
+
+        let resolved = resolve_citations(
+            &reply(
+                "答案来自 [C1]、[C99] 和 [C1]",
+                vec!["C1", "C99", "C1", "C2"],
+            ),
+            &map,
+        );
+
+        assert_eq!(resolved.len(), 2);
+        assert!(resolved.iter().any(|item| item.chunk_id == first.chunk_id));
+        assert!(resolved.iter().any(|item| item.chunk_id == second.chunk_id));
+        assert!(
+            !resolved
+                .iter()
+                .any(|item| item.source_title.contains("invented")),
+            "unknown labels must never create citations"
+        );
+    }
+
+    #[test]
+    fn resolve_citations_reads_inline_labels_when_json_citations_are_empty() {
+        let known = citation("射影平面笔记", "平行线共享无穷远点。");
+        let mut map = HashMap::new();
+        map.insert("C1".to_owned(), known.clone());
+
+        let resolved = resolve_citations(&reply("见 [C1]", Vec::new()), &map);
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].chunk_id, known.chunk_id);
+    }
+
+    #[test]
+    fn choose_grounding_never_fakes_a_source() {
+        let known = citation("射影平面笔记", "无穷远点。");
+        assert_eq!(
+            choose_grounding(false, false, &[known], Some("model_knowledge")),
+            "source_grounded"
+        );
+        assert_eq!(
+            choose_grounding(true, true, &[], None),
+            "insufficient_source"
+        );
+        assert_eq!(choose_grounding(false, false, &[], None), "model_knowledge");
+    }
+}

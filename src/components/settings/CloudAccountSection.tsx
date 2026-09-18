@@ -29,6 +29,7 @@ function planLabel(plan?: string | null): string {
 
 export function CloudAccountSection() {
   const account = useCloudStore((state) => state.account);
+  const sessionState = useCloudStore((state) => state.sessionState);
   const devices = useCloudStore((state) => state.devices);
   const usage = useCloudStore((state) => state.usage);
   const syncStatus = useCloudStore((state) => state.syncStatus);
@@ -61,8 +62,13 @@ export function CloudAccountSection() {
     if (account?.baseUrl) setBaseUrlDraft(account.baseUrl);
   }, [account?.baseUrl]);
 
+  const accountState = account?.state ?? sessionState;
+  const authenticated = accountState === "authenticated";
+  const degraded = accountState === "degradedOffline";
+  const restoring = accountState === "restoring";
+  const signedOut = accountState === "signedOut";
   const officialAi = account?.entitlements?.officialAi ?? false;
-  const cloudSelectable = Boolean(account?.loggedIn && officialAi);
+  const cloudSelectable = Boolean(authenticated && officialAi);
   const creditsLimit = account?.entitlements?.monthlyAiCredits ?? 0;
   const creditsUsed =
     usage?.creditsUsed ?? account?.entitlements?.monthlyAiCreditsUsed ?? 0;
@@ -79,7 +85,15 @@ export function CloudAccountSection() {
       <div className="form-section">
         <div className="row">
           <h2>AI 来源</h2>
-          <span className="small">{account?.loggedIn ? "已登录" : "本地优先"}</span>
+          <span className="small">
+            {authenticated
+              ? "已登录"
+              : degraded
+                ? "离线 · 等待重新连接"
+                : restoring
+                  ? "正在恢复…"
+                  : "本地优先"}
+          </span>
         </div>
         <div className="mt-3 space-y-2">
           {AI_SOURCES.map((source) => {
@@ -105,9 +119,11 @@ export function CloudAccountSection() {
                 </span>
                 <small className="mt-1 block text-xs text-muted">
                   {source.detail}
-                  {source.value === "cloud" && !cloudSelectable
-                    ? " 需要先登录并确认会员能力。"
-                    : ""}
+                  {source.value === "cloud" && degraded
+                    ? " 官方 AI 暂不可用；BYOK 与离线模式仍可用。"
+                    : source.value === "cloud" && !cloudSelectable
+                      ? " 需要先登录并确认会员能力。"
+                      : ""}
                 </small>
               </button>
             );
@@ -126,7 +142,12 @@ export function CloudAccountSection() {
           <span className="small">{planLabel(account?.plan)}</span>
         </div>
 
-        {!account?.loggedIn ? (
+        {restoring ? (
+          <div className="mt-3 rounded-lg border border-subtle bg-paper px-4 py-3">
+            <p className="prototype-note">正在恢复 Cloud session…</p>
+            <p className="mt-2 text-xs text-muted">本地学习、路线与资料始终可用。</p>
+          </div>
+        ) : signedOut ? (
           <form
             className="mt-3 space-y-3"
             onSubmit={(event) => {
@@ -172,7 +193,7 @@ export function CloudAccountSection() {
               </button>
             </div>
           </form>
-        ) : (
+        ) : account ? (
           <div className="mt-3 space-y-3">
             <div className="rounded-lg border border-subtle bg-paper px-4 py-3">
               <div className="flex items-center justify-between gap-3">
@@ -181,8 +202,15 @@ export function CloudAccountSection() {
                     {account.email}
                   </strong>
                   <small className="text-xs text-muted">
+                    {degraded ? "离线 · 等待重新连接" : "在线"} ·{" "}
                     {planLabel(account.plan)} · {account.device?.name ?? "当前设备"}
                   </small>
+                  {degraded ? (
+                    <p className="mt-2 text-xs text-muted">
+                      上次已知 {planLabel(account.plan)} · 官方 AI 暂不可用 ·
+                      本地 BYOK 与离线模式仍可用
+                    </p>
+                  ) : null}
                 </div>
                 <button
                   type="button"
@@ -200,22 +228,40 @@ export function CloudAccountSection() {
                 <div>
                   <strong className="block text-sm text-primary">Cloud Sync</strong>
                   <small className="text-xs text-muted">
-                    {account.syncEnabled
-                      ? "同步学习路线、进度、笔记和选择的学习资料"
-                      : "账号仅用于官方 AI，不同步本地数据"}
+                    {degraded
+                      ? "等待连接 · 本地学习不受影响"
+                      : account.syncEnabled
+                        ? "同步学习路线、进度、笔记和选择的学习资料"
+                        : "账号仅用于官方 AI，不同步本地数据"}
                   </small>
                 </div>
                 <button
                   type="button"
                   className={`choice${account.syncEnabled ? " selected" : ""}`}
                   aria-pressed={account.syncEnabled}
+                  disabled={degraded || busy}
                   onClick={() => void setSyncEnabled(!account.syncEnabled)}
                   data-motion="menu"
                 >
-                  {account.syncEnabled ? "已开启" : "已关闭"}
+                  {degraded ? "等待连接" : account.syncEnabled ? "已开启" : "已关闭"}
                 </button>
               </div>
-              {account.syncEnabled ? (
+              {degraded ? (
+                <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-subtle pt-3">
+                  <small className="mr-auto text-[11px] text-muted">
+                    已保留本地路线、进度与资料，联网后会自动追赶。
+                  </small>
+                  <button
+                    type="button"
+                    className="rounded-md border border-subtle px-3 py-1.5 text-xs text-primary"
+                    disabled={busy}
+                    onClick={() => void load()}
+                    data-motion="menu"
+                  >
+                    重试连接
+                  </button>
+                </div>
+              ) : account.syncEnabled ? (
                 <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-subtle pt-3">
                   <small className="mr-auto text-[11px] text-muted">
                     {syncStatus
@@ -304,7 +350,7 @@ export function CloudAccountSection() {
               </ul>
             </div>
           </div>
-        )}
+        ) : null}
 
         <details className="mt-3">
           <summary className="cursor-pointer text-xs text-muted">Cloud 服务地址</summary>

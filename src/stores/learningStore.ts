@@ -8,6 +8,7 @@ import {
   type QuizQuestion,
   type LearningEvaluation,
   type QuizResult,
+  type TutorCitation,
   type TutorTurn,
 } from "@/api";
 
@@ -19,6 +20,8 @@ export interface ChatMessage {
   kind: MessageKind;
   text: string;
   note?: string;
+  citations?: TutorCitation[];
+  grounding?: string;
 }
 
 export interface QuizDraft {
@@ -85,6 +88,9 @@ function stopActiveStream(): void {
 }
 
 function tutorNote(turn: TutorTurn): string | undefined {
+  if (turn.grounding === "insufficient_source") {
+    return "现有资料里没有找到足够依据。";
+  }
   if (turn.adaptation?.kind === "review_inserted") {
     return "已在你的路线里插入一节针对性加练";
   }
@@ -389,7 +395,13 @@ export const useLearningStore = create<LearningState>((set, get) => ({
         set((state) => ({
           messages: state.messages.map((message) =>
             message.id === assistantId
-              ? { ...message, text: turn.message, note: tutorNote(turn) }
+              ? {
+                  ...message,
+                  text: turn.message,
+                  note: tutorNote(turn),
+                  citations: turn.citations,
+                  grounding: turn.grounding,
+                }
               : message,
           ),
           lastAdaptation: turn.adaptation ?? state.lastAdaptation,
@@ -407,6 +419,8 @@ export const useLearningStore = create<LearningState>((set, get) => ({
               // A tutor turn can change the roadmap. Saying so here is the
               // difference between adapting and silently rewriting things.
               note: tutorNote(turn),
+              citations: turn.citations,
+              grounding: turn.grounding,
             },
           ],
           lastAdaptation: turn.adaptation ?? state.lastAdaptation,

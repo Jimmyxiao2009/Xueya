@@ -10,9 +10,11 @@
 //! The harness script upgrades the account to `pro` before running this test;
 //! the test itself never touches PostgreSQL directly.
 
+use futures_util::StreamExt;
 use std::sync::Arc;
 use tempfile::TempDir;
 use uuid::Uuid;
+use verruckt_lib::ai::stream::{with_lifecycle, AiStreamEvent};
 use verruckt_lib::ai::traits::{ChatMessage, ChatRequest};
 use verruckt_lib::domain::SourceKind;
 use verruckt_lib::knowledge_fs::blob_store::BlobStore;
@@ -98,6 +100,49 @@ async fn live_cloud_account_ai_sync_files_and_persistence() {
         response.content.contains("mock upstream reply"),
         "unexpected cloud chat response: {}",
         response.content
+    );
+
+    // Desktop SSE parser -> Cloud relay -> mock upstream -> Cloud relay ->
+    // Desktop. The lifecycle must be Started, Delta*, Completed with no
+    // duplicate deltas or a second terminal event.
+    let stream = chat
+        .chat_stream(ChatRequest::new(
+            config.chat_model.clone(),
+            vec![ChatMessage::user("stream verruckt e2e")],
+        ))
+        .await
+        .expect("cloud stream");
+    let mut events = with_lifecycle(stream, config.chat_model.clone());
+    let mut collected = Vec::new();
+    while let Some(event) = events.next().await {
+        collected.push(event.expect("stream event"));
+    }
+    assert!(matches!(
+        collected.first(),
+        Some(AiStreamEvent::Started { .. })
+    ));
+    assert!(matches!(
+        collected.last(),
+        Some(AiStreamEvent::Completed { .. })
+    ));
+    let delta_text: String = collected
+        .iter()
+        .filter_map(|event| match event {
+            AiStreamEvent::Delta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        delta_text.contains("mock upstream reply"),
+        "unexpected cloud stream deltas: {collected:?}"
+    );
+    assert_eq!(
+        collected
+            .iter()
+            .filter(|event| matches!(event, AiStreamEvent::Completed { .. }))
+            .count(),
+        1,
+        "stream must have exactly one terminal event: {collected:?}"
     );
 
     let (_, embedding) = state_a

@@ -272,6 +272,14 @@ ai/cloud.rs              CloudAiProvider -> /v1/chat/completions and
   is never sent to the frontend. A single-flight refresh lock refreshes on 401
   and retries the original request exactly once; an auth failure clears the
   session and emits `cloud_signed_out`.
+* Session state is explicit: `Restoring | Authenticated | DegradedOffline |
+  SignedOut`. Only non-secret account metadata (user id, email, plan,
+  entitlements, usage snapshot, last successful refresh time) is persisted in
+  `cloud_account_snapshot`; no token is ever written there. Network, timeout,
+  or 5xx failures transition to `DegradedOffline` and keep the refresh token
+  and snapshot, so local learning and the last known plan remain available. A
+  401/refresh-reuse invalidates the session, deletes the keyring refresh token,
+  and transitions to `SignedOut`.
 
 ### 5.7 Local-first delta sync
 
@@ -393,9 +401,9 @@ pass vacuously.
 
 | Layer | Where | What it proves |
 | --- | --- | --- |
-| Rust unit | `src-tauri/src/**` (67 tests) | repo CRUD, migrations, planner, grading, mastery, chunking, hashing, sync journal/adapters |
-| Rust integration | `src-tauri/tests/learning_loop.rs` (14), `provider_compat.rs` (8), `retrieval.rs` (4), `cloud_client.rs` (7) | the learning loop, provider protocol matrix, hybrid retrieval, and Cloud session/refresh/error/provider gating against a loopback mock |
-| Rust Cloud E2E | `src-tauri/tests/cloud_live.rs` (1 ignored by default) | real desktop → Docker Compose Cloud → mock OpenAI upstream: account, Cloud AI, embeddings, delta sync A→B, conflict preservation, file upload/download, restart persistence |
+| Rust unit | `src-tauri/src/**` (70 tests) | repo CRUD, migrations, planner, grading, mastery, chunking, hashing, sync journal/adapters, citation validation/grounding |
+| Rust integration | `src-tauri/tests/learning_loop.rs` (14), `provider_compat.rs` (8), `retrieval.rs` (4), `cloud_client.rs` (12), `competition_demo.rs` (1) | the learning loop, provider protocol matrix, hybrid retrieval, Cloud session/refresh/error/streaming gating against a loopback mock, and deterministic competition fixture reset |
+| Rust Cloud E2E | `src-tauri/tests/cloud_live.rs` (1 ignored by default) | real desktop → Docker Compose Cloud → mock OpenAI upstream: account, Cloud AI, streaming, embeddings, delta sync A→B, conflict preservation, file upload/download, restart persistence |
 | Contract | `src/test/ipc-contract.test.ts` (3 tests) | command names agree across `api.ts`, `lib.rs` and the fake backend |
 | Frontend | `src/test/app.test.tsx` (14 tests) | route switching, lesson open/close, quiz submit (correct / wrong / ungraded), model review of a free-text answer, route creation, web collection, BYOK save (key never echoed), source library, tutor adaptation |
 | Frontend unit | `src/lib/design.test.ts` (13 tests) | road geometry, drag physics, release timing, clip math, node faces |
@@ -432,15 +440,18 @@ These are real and unfinished:
   but it does not de-duplicate near-identical pages or re-rank by quality.
 * A provider's API key can be tested and stored, but nothing verifies the
   embedding model actually exists on the configured endpoint until a job runs.
-* Bundling is configured (`bundle.targets: "all"`) but only `--no-bundle` builds
-  have been run in this environment, because the MSI/NSIS toolchain is not
-  available offline.
+* Windows NSIS bundling is verified and produces
+  `bundle/nsis/Orbit_0.1.0-rc.1_x64-setup.exe`. MSI bundling rejects the
+  `0.1.0-rc.1` pre-release identifier because WiX requires a numeric-only
+  pre-release component; install/start/uninstall has not been executed here.
 * The live Cloud E2E is opt-in (`cargo test --test cloud_live -- --ignored`);
   it needs Docker Compose and a fresh pro account. A real WebView smoke against
   Cloud is not automated here.
 * Sync conflict resolution currently preserves the local row and records the
   server payload. The UI warns about the open conflict but does not yet offer a
   side-by-side merge/choose-server action.
-* Cloud AI streaming uses the same incremental stream path as BYOK, but the
-  live Cloud E2E exercises non-streaming chat and embeddings; the SSE path is
-  covered by the Cloud workspace integration test and the frontend unit path.
+* Cloud AI streaming uses the same incremental stream path as BYOK. The
+  loopback `cloud_client` tests cover success, malformed SSE, upstream error,
+  and client cancellation; `cloud_live.rs` now also exercises the streaming
+  lifecycle when the Docker Compose environment is available, but that opt-in
+  live run has not been executed in this offline environment.

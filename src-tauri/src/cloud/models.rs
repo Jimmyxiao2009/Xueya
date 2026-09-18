@@ -125,11 +125,34 @@ pub struct CloudAiUsage {
     pub events: Vec<CloudAiUsageEvent>,
 }
 
+/// Explicit cloud-session state model.
+///
+/// `logged_in` was too coarse: a transient network failure while restoring a
+/// valid refresh credential looked identical to an explicit sign-out, which
+/// caused the UI to present the account as anonymous and hide the last known
+/// plan. This state keeps local-first learning honest without ever exposing a
+/// secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum CloudSessionState {
+    /// Startup is restoring the session from the keyring refresh credential.
+    Restoring,
+    /// Access token and account snapshot are current.
+    Authenticated,
+    /// A valid refresh credential / account snapshot exists, but the cloud is
+    /// temporarily unreachable. Local learning continues unchanged.
+    DegradedOffline,
+    /// No credential exists, or the cloud explicitly rejected it.
+    #[default]
+    SignedOut,
+}
+
 /// Non-secret account state safe to send to the frontend. The refresh token is
 /// never part of this shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudAccountState {
+    pub state: CloudSessionState,
     pub logged_in: bool,
     pub email: Option<String>,
     pub user_id: Option<Uuid>,
@@ -138,6 +161,25 @@ pub struct CloudAccountState {
     pub device: Option<CloudDeviceDto>,
     pub sync_enabled: bool,
     pub base_url: String,
+    /// Last successful refresh time, surfaced for the offline status line.
+    pub last_successful_refresh_at: Option<DateTime<Utc>>,
+}
+
+/// Persisted, non-secret account snapshot used by `DegradedOffline`.
+///
+/// It contains only account identity, plan/entitlements, and a usage snapshot.
+/// It is never a credential and is deleted on explicit sign-out.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAccountSnapshot {
+    pub user_id: Uuid,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub plan: Option<String>,
+    pub entitlements: Option<CloudEntitlements>,
+    pub usage: Option<CloudAiUsage>,
+    pub last_successful_refresh_at: DateTime<Utc>,
+    pub saved_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,11 +240,14 @@ impl From<CloudDevice> for CloudDeviceDto {
 /// token lives in the OS credential store.
 #[derive(Debug, Clone, Default)]
 pub struct CloudSession {
+    pub state: CloudSessionState,
     pub access_token: Option<String>,
     pub access_expires_at: Option<DateTime<Utc>>,
     pub user: Option<CloudUser>,
     pub device: Option<CloudDevice>,
     pub entitlements: Option<CloudEntitlements>,
+    pub usage: Option<CloudAiUsage>,
+    pub last_successful_refresh_at: Option<DateTime<Utc>>,
 }
 
 impl CloudSession {

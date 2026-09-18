@@ -1,8 +1,8 @@
 use super::models::{
-    CloudAccountState, CloudAiUsage, CloudAuthResponse, CloudDevice, CloudDeviceDto,
-    CloudDeviceInput, CloudEntitlements, CloudEntitlementsDto, CloudErrorEnvelope,
+    CloudAccountSnapshot, CloudAccountState, CloudAiUsage, CloudAuthResponse, CloudDevice,
+    CloudDeviceDto, CloudDeviceInput, CloudEntitlements, CloudEntitlementsDto, CloudErrorEnvelope,
     CloudLoginRequest, CloudLogoutRequest, CloudMeResponse, CloudRefreshRequest,
-    CloudRegisterRequest, CloudSession,
+    CloudRegisterRequest, CloudSession, CloudSessionState,
 };
 use crate::error::AppError;
 use crate::secrets::keyring_store::SecretStore;
@@ -37,6 +37,7 @@ pub struct CloudAccountClient {
     base_url: RwLock<String>,
     session: AsyncRwLock<CloudSession>,
     refresh_lock: AsyncMutex<()>,
+    restore_lock: AsyncMutex<()>,
     events: broadcast::Sender<CloudEvent>,
 }
 
@@ -55,6 +56,7 @@ impl CloudAccountClient {
             base_url: RwLock::new(base_url.into()),
             session: AsyncRwLock::new(CloudSession::default()),
             refresh_lock: AsyncMutex::new(()),
+            restore_lock: AsyncMutex::new(()),
             events,
         }
     }
@@ -68,6 +70,10 @@ impl CloudAccountClient {
             if let Ok(normalized) = normalize_cloud_base_url(&value) {
                 *self.base_url.write().expect("base url lock") = normalized;
             }
+        }
+        if self.secrets.secret_exists(REFRESH_TOKEN_REF).await? {
+            self.session.write().await.state = CloudSessionState::Restoring;
+            self.emit("cloud_session_restoring", serde_json::json!({}));
         }
         Ok(())
     }
@@ -158,13 +164,20 @@ impl CloudAccountClient {
             refresh_token,
             device: Some(self.device_input().await?),
         };
-        let response = self
+        let response = match self
             .http
             .post(format!("{}/api/v1/auth/refresh", self.base_url()))
             .json(&body)
             .send()
             .await
-            .map_err(network_error)?;
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let error = network_error(error);
+                self.mark_degraded().await;
+                return Err(error);
+            }
+        };
 
         if response.status() == StatusCode::UNAUTHORIZED {
             let error = self.map_response(response).await;
@@ -172,7 +185,9 @@ impl CloudAccountClient {
             return Err(error);
         }
         if !response.status().is_success() {
-            return Err(self.map_response(response).await);
+            let error = self.map_response(response).await;
+            self.mark_degraded().await;
+            return Err(error);
         }
         let auth: CloudAuthResponse = response
             .json()
@@ -235,49 +250,100 @@ impl CloudAccountClient {
     }
 
     pub async fn account_state(&self) -> Result<CloudAccountState, AppError> {
-        if !self.restore_if_needed().await? {
-            return self.anonymous_state().await;
-        }
-        self.current_state().await
-    }
-
-    async fn restore_if_needed(&self) -> Result<bool, AppError> {
+        // Fast path: a fully restored, in-memory session.
         {
             let session = self.session.read().await;
-            if session.user.is_some() && session.entitlements.is_some() {
-                return Ok(true);
+            if session.state == CloudSessionState::Authenticated
+                && session.user.is_some()
+                && session.entitlements.is_some()
+            {
+                drop(session);
+                return self.current_state().await;
             }
         }
+
         if !self.secrets.secret_exists(REFRESH_TOKEN_REF).await? {
-            return Ok(false);
+            self.clear_session().await;
+            return self.anonymous_state().await;
         }
-        if let Err(error) = self.access_token().await {
-            tracing::warn!(%error, "could not restore the Verruckt Cloud session");
-            if is_auth_error(&error) {
-                self.clear_session().await;
+
+        // Only one caller restores at a time. Other callers report
+        // `Restoring` instead of briefly falling back to an anonymous state.
+        let Ok(_guard) = self.restore_lock.try_lock() else {
+            return self.state_from_snapshot(CloudSessionState::Restoring).await;
+        };
+
+        // Re-check after taking the lock: another restore may have completed
+        // while this caller waited for the fast path.
+        {
+            let session = self.session.read().await;
+            if session.state == CloudSessionState::Authenticated
+                && session.user.is_some()
+                && session.entitlements.is_some()
+            {
+                drop(session);
+                return self.current_state().await;
             }
-            return Ok(false);
         }
-        // Populate the non-secret account state.
-        if let Err(error) = self.refresh_me().await {
-            tracing::warn!(%error, "could not load the Verruckt Cloud account");
-            if is_auth_error(&error) {
-                self.clear_session().await;
+
+        self.set_session_state(CloudSessionState::Restoring).await;
+        match self.try_restore().await {
+            Ok(()) => {
+                self.set_session_state(CloudSessionState::Authenticated)
+                    .await;
+                self.current_state().await
             }
-            return Ok(false);
-        }
-        if let Err(error) = self.refresh_entitlements().await {
-            tracing::warn!(%error, "could not load Verruckt Cloud entitlements");
-            if is_auth_error(&error) {
+            Err(error) if is_auth_error(&error) => {
+                // Explicit 401 / invalid refresh / reuse detection: the
+                // credential is no longer trustworthy.
                 self.clear_session().await;
+                self.anonymous_state().await
             }
-            return Ok(false);
+            Err(error) => {
+                tracing::warn!(%error, "cloud session is degraded; local learning continues");
+                self.set_session_state(CloudSessionState::DegradedOffline)
+                    .await;
+                self.state_from_snapshot(CloudSessionState::DegradedOffline)
+                    .await
+            }
         }
-        Ok(true)
+    }
+
+    async fn try_restore(&self) -> Result<(), AppError> {
+        self.access_token().await?;
+        // `/me` and `/me/entitlements` are the authoritative snapshot; always
+        // refresh both during restore so a successful login can never show a
+        // partially populated account.
+        self.refresh_me().await?;
+        self.refresh_entitlements().await?;
+        Ok(())
+    }
+
+    async fn set_session_state(&self, state: CloudSessionState) {
+        {
+            let mut session = self.session.write().await;
+            session.state = state;
+        }
+        self.emit(
+            "cloud_session_state_changed",
+            serde_json::json!({ "state": state }),
+        );
+    }
+
+    async fn mark_degraded(&self) {
+        let should_mark = {
+            let session = self.session.read().await;
+            session.state != CloudSessionState::SignedOut
+        };
+        if should_mark {
+            self.set_session_state(CloudSessionState::DegradedOffline)
+                .await;
+        }
     }
 
     async fn anonymous_state(&self) -> Result<CloudAccountState, AppError> {
         Ok(CloudAccountState {
+            state: CloudSessionState::SignedOut,
             logged_in: false,
             email: None,
             user_id: None,
@@ -286,17 +352,29 @@ impl CloudAccountClient {
             device: None,
             sync_enabled: self.sync_enabled().await?,
             base_url: self.base_url(),
+            last_successful_refresh_at: None,
         })
     }
 
     async fn current_state(&self) -> Result<CloudAccountState, AppError> {
+        let session = self.session.read().await;
+        let state = session.state;
+        drop(session);
+        self.current_state_with_state(state).await
+    }
+
+    async fn current_state_with_state(
+        &self,
+        state: CloudSessionState,
+    ) -> Result<CloudAccountState, AppError> {
         let session = self.session.read().await;
         let entitlements = session
             .entitlements
             .as_ref()
             .map(CloudEntitlementsDto::from);
         Ok(CloudAccountState {
-            logged_in: session.user.is_some(),
+            state,
+            logged_in: state == CloudSessionState::Authenticated && session.user.is_some(),
             email: session.user.as_ref().map(|user| user.email.clone()),
             user_id: session.user.as_ref().map(|user| user.id),
             plan: session
@@ -307,7 +385,86 @@ impl CloudAccountClient {
             device: session.device.clone().map(CloudDeviceDto::from),
             sync_enabled: self.sync_enabled().await?,
             base_url: self.base_url(),
+            last_successful_refresh_at: session.last_successful_refresh_at,
         })
+    }
+
+    /// Build a safe state from the persisted snapshot. This is the only path
+    /// that can show an account while the cloud is unreachable.
+    async fn state_from_snapshot(
+        &self,
+        state: CloudSessionState,
+    ) -> Result<CloudAccountState, AppError> {
+        let Some(snapshot) = self.load_snapshot().await? else {
+            return self.current_state_with_state(state).await;
+        };
+        let entitlements = snapshot
+            .entitlements
+            .as_ref()
+            .map(CloudEntitlementsDto::from);
+        Ok(CloudAccountState {
+            state,
+            logged_in: state == CloudSessionState::Authenticated,
+            email: Some(snapshot.email),
+            user_id: Some(snapshot.user_id),
+            plan: snapshot.plan.or_else(|| {
+                snapshot
+                    .entitlements
+                    .as_ref()
+                    .map(|value| value.plan.clone())
+            }),
+            entitlements,
+            device: None,
+            sync_enabled: self.sync_enabled().await?,
+            base_url: self.base_url(),
+            last_successful_refresh_at: Some(snapshot.last_successful_refresh_at),
+        })
+    }
+
+    async fn load_snapshot(&self) -> Result<Option<CloudAccountSnapshot>, AppError> {
+        let payload: Option<String> =
+            sqlx::query_scalar("SELECT payload_json FROM cloud_account_snapshot WHERE id = 1")
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(payload.and_then(|value| serde_json::from_str(&value).ok()))
+    }
+
+    async fn persist_snapshot(&self) -> Result<(), AppError> {
+        let session = self.session.read().await;
+        let Some(user) = session.user.as_ref() else {
+            return Ok(());
+        };
+        let snapshot = CloudAccountSnapshot {
+            user_id: user.id,
+            email: user.email.clone(),
+            display_name: user.display_name.clone(),
+            plan: session
+                .entitlements
+                .as_ref()
+                .map(|value| value.plan.clone()),
+            entitlements: session.entitlements.clone(),
+            usage: session.usage.clone(),
+            last_successful_refresh_at: session.last_successful_refresh_at.unwrap_or_else(utc_now),
+            saved_at: utc_now(),
+        };
+        drop(session);
+        let payload = serde_json::to_string(&snapshot)
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO cloud_account_snapshot (id, payload_json, updated_at) VALUES (1, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at",
+        )
+        .bind(payload)
+        .bind(utc_now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn clear_snapshot(&self) {
+        let _ = sqlx::query("DELETE FROM cloud_account_snapshot WHERE id = 1")
+            .execute(&self.pool)
+            .await;
     }
 
     pub async fn me(&self) -> Result<CloudMeResponse, AppError> {
@@ -337,6 +494,16 @@ impl CloudAccountClient {
                 return Ok(entitlements);
             }
         }
+        // DegradedOffline still needs the last known plan for UI gating. The
+        // gateway remains the source of truth, so this snapshot can never grant
+        // a real server-side entitlement.
+        if let Some(snapshot) = self.load_snapshot().await? {
+            if let Some(entitlements) = snapshot.entitlements {
+                let mut session = self.session.write().await;
+                session.entitlements = Some(entitlements.clone());
+                return Ok(entitlements);
+            }
+        }
         self.entitlements().await
     }
 
@@ -357,7 +524,14 @@ impl CloudAccountClient {
         let response = self
             .authorized_json(Method::GET, "/api/v1/ai/usage", None)
             .await?;
-        parse_json(response).await
+        let usage: CloudAiUsage = parse_json(response).await?;
+        {
+            let mut session = self.session.write().await;
+            session.usage = Some(usage.clone());
+            session.last_successful_refresh_at = Some(utc_now());
+        }
+        self.persist_snapshot().await?;
+        Ok(usage)
     }
 
     async fn refresh_me(&self) -> Result<(), AppError> {
@@ -365,8 +539,12 @@ impl CloudAccountClient {
             .authorized_json(Method::GET, "/api/v1/me", None)
             .await?;
         let me: CloudMeResponse = parse_json(response).await?;
-        let mut session = self.session.write().await;
-        session.user = Some(me.user);
+        {
+            let mut session = self.session.write().await;
+            session.user = Some(me.user);
+            session.last_successful_refresh_at = Some(utc_now());
+        }
+        self.persist_snapshot().await?;
         Ok(())
     }
 
@@ -375,8 +553,12 @@ impl CloudAccountClient {
             .authorized_json(Method::GET, "/api/v1/me/entitlements", None)
             .await?;
         let entitlements: CloudEntitlements = parse_json(response).await?;
-        let mut session = self.session.write().await;
-        session.entitlements = Some(entitlements);
+        {
+            let mut session = self.session.write().await;
+            session.entitlements = Some(entitlements);
+            session.last_successful_refresh_at = Some(utc_now());
+        }
+        self.persist_snapshot().await?;
         Ok(())
     }
 
@@ -478,17 +660,39 @@ impl CloudAccountClient {
             self.set_setting_string(DEVICE_PLATFORM_KEY, &device.platform)
                 .await?;
         }
+        let (mut previous_usage, mut previous_entitlements) = {
+            let session = self.session.read().await;
+            (session.usage.clone(), session.entitlements.clone())
+        };
+        // A refresh response does not carry entitlements. Keep the last known
+        // non-secret snapshot so a later transient failure can still show the
+        // account and plan instead of degrading to anonymous.
+        if previous_usage.is_none() || previous_entitlements.is_none() {
+            if let Some(snapshot) = self.load_snapshot().await? {
+                if previous_usage.is_none() {
+                    previous_usage = snapshot.usage;
+                }
+                if previous_entitlements.is_none() {
+                    previous_entitlements = snapshot.entitlements;
+                }
+            }
+        }
         {
             let mut session = self.session.write().await;
+            session.state = CloudSessionState::Authenticated;
             session.access_token = Some(auth.access_token.clone());
             session.access_expires_at = Some(expires_at);
             session.user = Some(auth.user.clone());
             session.device = auth.device.clone();
-            session.entitlements = None;
+            session.entitlements = previous_entitlements;
+            session.usage = previous_usage;
+            session.last_successful_refresh_at = Some(utc_now());
         }
+        self.persist_snapshot().await?;
         self.emit(
             "cloud_session_changed",
             serde_json::json!({
+                "state": "authenticated",
                 "loggedIn": true,
                 "email": auth.user.email,
             }),
@@ -498,11 +702,16 @@ impl CloudAccountClient {
 
     async fn clear_session(&self) {
         let _ = self.secrets.delete_secret(REFRESH_TOKEN_REF).await;
+        self.clear_snapshot().await;
         {
             let mut session = self.session.write().await;
             *session = CloudSession::default();
         }
         self.emit("cloud_signed_out", serde_json::json!({}));
+        self.emit(
+            "cloud_session_state_changed",
+            serde_json::json!({ "state": "signedOut" }),
+        );
     }
 
     pub async fn device_id(&self) -> Result<Option<Uuid>, AppError> {

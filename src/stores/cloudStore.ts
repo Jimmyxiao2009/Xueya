@@ -5,6 +5,7 @@ import {
   type CloudAccountState,
   type CloudDevice,
   type CloudMe,
+  type CloudSessionState,
   type CloudUsage,
   type SyncConflict,
   type SyncStatus,
@@ -13,6 +14,8 @@ import { cloudErrorText } from "@/lib/cloudErrors";
 
 interface CloudState {
   account: CloudAccountState | null;
+  /** Explicit session state so a transient restore never looks anonymous. */
+  sessionState: CloudSessionState;
   me: CloudMe | null;
   devices: CloudDevice[];
   usage: CloudUsage | null;
@@ -39,6 +42,7 @@ interface CloudState {
 
 export const useCloudStore = create<CloudState>((set, get) => ({
   account: null,
+  sessionState: "restoring",
   me: null,
   devices: [],
   usage: null,
@@ -50,16 +54,24 @@ export const useCloudStore = create<CloudState>((set, get) => ({
   error: null,
 
   load: async () => {
-    set({ loading: true });
+    set({ loading: true, sessionState: get().account?.state ?? "restoring" });
     try {
       const account = await api.cloudAccountState();
-      set({ account, loading: false, error: null });
-      if (account.loggedIn) {
+      set({ account, sessionState: account.state, loading: false, error: null });
+      if (account.state === "authenticated") {
         await Promise.all([get().loadDevices(), get().loadUsage(), get().loadSyncStatus()]);
         if (account.syncEnabled) await get().loadConflicts();
+      } else {
+        // DegradedOffline may still have a usage/entitlement snapshot. Keep it
+        // visible, but never call authenticated endpoints while offline.
+        set({ devices: [], syncStatus: null, conflicts: [] });
       }
     } catch (error) {
-      set({ loading: false, error: cloudErrorText(errorOf(error)) });
+      set({
+        loading: false,
+        sessionState: "signedOut",
+        error: cloudErrorText(errorOf(error)),
+      });
     }
   },
 
@@ -67,8 +79,10 @@ export const useCloudStore = create<CloudState>((set, get) => ({
     set({ busy: true, error: null });
     try {
       const account = await api.cloudRegister({ email, password });
-      set({ account, busy: false });
-      await Promise.all([get().loadDevices(), get().loadUsage()]);
+      set({ account, sessionState: account.state, busy: false });
+      if (account.state === "authenticated") {
+        await Promise.all([get().loadDevices(), get().loadUsage()]);
+      }
       return true;
     } catch (error) {
       set({ busy: false, error: cloudErrorText(errorOf(error)) });
@@ -80,8 +94,10 @@ export const useCloudStore = create<CloudState>((set, get) => ({
     set({ busy: true, error: null });
     try {
       const account = await api.cloudLogin({ email, password });
-      set({ account, busy: false });
-      await Promise.all([get().loadDevices(), get().loadUsage()]);
+      set({ account, sessionState: account.state, busy: false });
+      if (account.state === "authenticated") {
+        await Promise.all([get().loadDevices(), get().loadUsage()]);
+      }
       return true;
     } catch (error) {
       set({ busy: false, error: cloudErrorText(errorOf(error)) });
@@ -95,6 +111,7 @@ export const useCloudStore = create<CloudState>((set, get) => ({
       const account = await api.cloudLogout();
       set({
         account,
+        sessionState: account.state,
         me: null,
         devices: [],
         usage: null,
@@ -156,6 +173,13 @@ export const useCloudStore = create<CloudState>((set, get) => ({
   syncNow: async () => {
     set({ syncing: true, error: null });
     try {
+      if (get().account?.state !== "authenticated") {
+        await get().load();
+      }
+      if (get().account?.state !== "authenticated") {
+        set({ syncing: false, error: "Cloud 暂不可用 · 本地学习不受影响" });
+        return;
+      }
       const summary = await api.syncNow();
       set({ syncing: false });
       if (summary.skipped && summary.reason && summary.reason !== "sync_disabled") {
@@ -189,7 +213,7 @@ export const useCloudStore = create<CloudState>((set, get) => ({
     set({ busy: true, error: null });
     try {
       const account = await api.cloudSetSyncEnabled(enabled);
-      set({ account, busy: false });
+      set({ account, sessionState: account.state, busy: false });
       await get().loadSyncStatus();
       if (enabled) await get().syncNow();
     } catch (error) {
@@ -203,6 +227,7 @@ export const useCloudStore = create<CloudState>((set, get) => ({
       const account = await api.cloudSetBaseUrl(url);
       set({
         account,
+        sessionState: account.state,
         me: null,
         devices: [],
         usage: null,
@@ -224,20 +249,54 @@ export const useCloudStore = create<CloudState>((set, get) => ({
 export function startForegroundSync(): () => void {
   if (typeof document === "undefined") return () => {};
   let running = false;
-  const onVisibilityChange = async () => {
-    if (document.visibilityState !== "visible" || running) return;
+
+  const recover = async (syncWhenAuthenticated: boolean) => {
+    if (running) return;
     running = true;
     try {
-      const state = useCloudStore.getState();
-      if (!state.account) await state.load();
-      const account = useCloudStore.getState().account;
-      if (account?.loggedIn && account.syncEnabled) await api.syncNow();
+      let account = useCloudStore.getState().account;
+      // Startup, foreground, manual sync and periodic recovery all pass
+      // through the same account_state path. A degraded session is retried
+      // without ever asking the learner to sign in again.
+      if (!account || account.state !== "authenticated") {
+        await useCloudStore.getState().load();
+        account = useCloudStore.getState().account;
+      }
+      if (
+        syncWhenAuthenticated &&
+        account?.state === "authenticated" &&
+        account.syncEnabled
+      ) {
+        await api.syncNow();
+      }
     } catch {
       // Cloud is optional: a foreground sync failure must not surface as an error.
     } finally {
       running = false;
     }
   };
+
+  const onVisibilityChange = () => {
+    if (document.visibilityState === "visible") void recover(true);
+  };
+  const onOnline = () => void recover(true);
+
   document.addEventListener("visibilitychange", onVisibilityChange);
+  if (typeof window !== "undefined") {
+    window.addEventListener("online", onOnline);
+    const interval = window.setInterval(() => {
+      const account = useCloudStore.getState().account;
+      if (!account || account.state === "degradedOffline") {
+        void recover(false);
+      }
+    }, 30_000);
+    void recover(true);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("online", onOnline);
+      window.clearInterval(interval);
+    };
+  }
+  void recover(true);
   return () => document.removeEventListener("visibilitychange", onVisibilityChange);
 }

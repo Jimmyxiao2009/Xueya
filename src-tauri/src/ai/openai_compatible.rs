@@ -711,11 +711,15 @@ fn parse_embedding_response(body: &[u8]) -> Result<Vec<Vec<f32>>, AppError> {
     Ok(vectors)
 }
 
-fn parse_sse_event(payload: &str, protocol: ProviderProtocol) -> Option<ChatDelta> {
+fn parse_sse_event(
+    payload: &str,
+    protocol: ProviderProtocol,
+) -> Result<Option<ChatDelta>, AppError> {
     if payload.trim() == "[DONE]" {
-        return None;
+        return Ok(None);
     }
-    let value: Value = serde_json::from_str(payload).ok()?;
+    let value: Value = serde_json::from_str(payload)
+        .map_err(|error| AppError::AiResponseInvalid(format!("malformed SSE event: {error}")))?;
     match protocol {
         ProviderProtocol::Responses => {
             let kind = value
@@ -727,41 +731,43 @@ fn parse_sse_event(payload: &str, protocol: ProviderProtocol) -> Option<ChatDelt
                     .get("delta")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                return Some(ChatDelta {
+                return Ok(Some(ChatDelta {
                     content: text.to_owned(),
                     finish_reason: None,
-                });
+                }));
             }
             if kind == "response.completed" {
-                return Some(ChatDelta {
+                return Ok(Some(ChatDelta {
                     content: String::new(),
                     finish_reason: Some("stop".into()),
-                });
+                }));
             }
-            None
+            // Known non-delta event types are ignored, not treated as corrupt.
+            Ok(None)
         }
         _ => {
-            let delta = value
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("delta"))?;
+            let Some(choices) = value.get("choices").and_then(Value::as_array) else {
+                return Ok(None);
+            };
+            let Some(choice) = choices.first() else {
+                return Ok(None);
+            };
+            let Some(delta) = choice.get("delta") else {
+                return Ok(None);
+            };
             let content = delta
                 .get("content")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            let finish_reason = value
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("finish_reason"))
+            let finish_reason = choice
+                .get("finish_reason")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            Some(ChatDelta {
+            Ok(Some(ChatDelta {
                 content,
                 finish_reason,
-            })
+            }))
         }
     }
 }
@@ -805,7 +811,7 @@ impl SseState {
                     self.done = true;
                     continue;
                 }
-                if let Some(delta) = parse_sse_event(payload, self.protocol) {
+                if let Some(delta) = parse_sse_event(payload, self.protocol)? {
                     return Ok(Some(delta));
                 }
             }
@@ -895,14 +901,18 @@ mod tests {
     #[test]
     fn parses_chat_completions_sse_delta() {
         let payload = r#"{"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}"#;
-        let delta = parse_sse_event(payload, ProviderProtocol::ChatCompletions).expect("delta");
+        let delta = parse_sse_event(payload, ProviderProtocol::ChatCompletions)
+            .expect("parse")
+            .expect("delta");
         assert_eq!(delta.content, "hi");
     }
 
     #[test]
     fn parses_responses_sse_delta() {
         let payload = r#"{"type":"response.output_text.delta","delta":"hi"}"#;
-        let delta = parse_sse_event(payload, ProviderProtocol::Responses).expect("delta");
+        let delta = parse_sse_event(payload, ProviderProtocol::Responses)
+            .expect("parse")
+            .expect("delta");
         assert_eq!(delta.content, "hi");
     }
 }

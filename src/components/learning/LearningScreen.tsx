@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { LearningRoute, RouteNode } from "@/api";
+import type { LearningRoute, RouteNode, TutorCitation } from "@/api";
 import { Icon } from "@/components/ui/Icon";
 import { SoftBlur } from "@/components/ui/SoftBlur";
 import { LearningPlan } from "@/components/learning/LearningPlan";
@@ -19,6 +19,66 @@ interface LearningScreenProps {
   /** Marks the node complete and refreshes the roadmap. */
   onFinish: () => Promise<void>;
   reduced: boolean;
+}
+
+const SOURCE_KIND_LABEL: Record<string, string> = {
+  file: "本地资料",
+  url: "网页资料",
+  search_result: "搜索资料",
+};
+
+/**
+ * A light citation affordance under a grounded tutor message. It shows the
+ * source title immediately, and reveals a small excerpt on demand; no internal
+ * chunk id, filesystem path, or embedding score is ever rendered.
+ */
+function CitationChips({ citations }: { citations: TutorCitation[] }) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  if (citations.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-1">
+      {citations.map((citation) => {
+        const open = openId === citation.chunkId;
+        return (
+          <div key={citation.chunkId}>
+            <button
+              type="button"
+              className="rounded-full border border-subtle bg-paper/70 px-2.5 py-1 text-[11px] text-muted transition hover:text-primary"
+              aria-expanded={open}
+              aria-label={`查看依据：${citation.sourceTitle}`}
+              onClick={() => setOpenId(open ? null : citation.chunkId)}
+            >
+              依据 · {citation.sourceTitle}
+            </button>
+            {open ? (
+              <div className="mt-1 rounded-lg border border-subtle bg-paper px-3 py-2">
+                <strong className="block text-xs text-primary">
+                  {citation.sourceTitle}
+                </strong>
+                <small className="block text-[11px] text-muted">
+                  {SOURCE_KIND_LABEL[citation.sourceKind] ?? "资料"}
+                  {citation.sourceFilename ? ` · ${citation.sourceFilename}` : ""}
+                </small>
+                <p className="mt-1 line-clamp-3 text-xs text-muted">
+                  {citation.text}
+                </p>
+                {citation.sourceUri ? (
+                  <a
+                    className="mt-1 inline-block text-[11px] text-accent"
+                    href={citation.sourceUri}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    打开原来源
+                  </a>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 /**
@@ -138,6 +198,9 @@ export function LearningScreen({
                       <small className="mt-1 block text-xs text-muted">
                         {message.note}
                       </small>
+                    ) : null}
+                    {message.citations?.length ? (
+                      <CitationChips citations={message.citations} />
                     ) : null}
                   </>
                 )}

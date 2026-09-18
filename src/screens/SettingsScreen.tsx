@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { api } from "@/api";
 import { CloudAccountSection } from "@/components/settings/CloudAccountSection";
 import { Icon } from "@/components/ui/Icon";
 import { toast } from "@/stores/uiStore";
@@ -60,6 +61,7 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
 
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT);
   const [busy, setBusy] = useState(false);
+  const [demoBusy, setDemoBusy] = useState(false);
   const [search, setSearch] = useState(searchProvider);
   const [braveKey, setBraveKey] = useState("");
 
@@ -112,6 +114,40 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
         </p>
 
         <CloudAccountSection />
+
+        {import.meta.env.DEV ? (
+          <div className="form-section">
+            <div className="row">
+              <h2>竞赛演示</h2>
+              <span className="small">仅开发构建</span>
+            </div>
+            <p className="prototype-note">
+              生成一条使用本地资料的真实「射影几何」演示路线：第一站已完成，第二站为当前站。
+              不会删除普通学习者路线。
+            </p>
+            <button
+              type="button"
+              className="primary mt-4"
+              data-motion="own"
+              disabled={demoBusy}
+              onClick={async () => {
+                if (!window.confirm("重置竞赛演示路线？只删除带演示标记的路线。")) return;
+                if (!window.confirm("再次确认：生成演示资料与路线。")) return;
+                setDemoBusy(true);
+                try {
+                  await api.competitionDemoSeed();
+                  toast("竞赛演示路线已就绪");
+                } catch {
+                  toast("演示重置失败；生产构建可能已禁用该命令");
+                } finally {
+                  setDemoBusy(false);
+                }
+              }}
+            >
+              {demoBusy ? "正在生成…" : "重置竞赛演示"}
+            </button>
+          </div>
+        ) : null}
 
         <div className="form-section">
           <div className="row">

@@ -12,12 +12,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 use verruckt_lib::ai::cloud::CloudAiProvider;
+use verruckt_lib::ai::stream::{with_lifecycle, AiStreamEvent};
 use verruckt_lib::ai::traits::{ChatMessage, ChatProvider, ChatRequest, EmbeddingProvider};
 use verruckt_lib::cloud::client::{CloudAccountClient, REFRESH_TOKEN_REF};
+use verruckt_lib::cloud::models::CloudSessionState;
 use verruckt_lib::error::AppError;
 use verruckt_lib::secrets::keyring_store::{InMemorySecretStore, SecretStore};
 use verruckt_lib::state::{AppPaths, AppState};
@@ -272,12 +275,14 @@ async fn test_pool() -> (AppState, tempfile::TempDir) {
     (state, dir)
 }
 
-async fn logged_in_client(server: &MockServer) -> Arc<CloudAccountClient> {
+async fn logged_in_client_with_secrets(
+    server: &MockServer,
+) -> (Arc<CloudAccountClient>, Arc<dyn SecretStore>) {
     let (state, dir) = test_pool().await;
     let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
     let client = Arc::new(CloudAccountClient::new(
         reqwest::Client::new(),
-        secrets,
+        secrets.clone(),
         state.pool.clone(),
         server.base_url(),
     ));
@@ -288,7 +293,11 @@ async fn logged_in_client(server: &MockServer) -> Arc<CloudAccountClient> {
         .login("e2e@example.com".to_owned(), "password123".to_owned())
         .await
         .expect("login");
-    client
+    (client, secrets)
+}
+
+async fn logged_in_client(server: &MockServer) -> Arc<CloudAccountClient> {
+    logged_in_client_with_secrets(server).await.0
 }
 
 #[tokio::test]
@@ -340,7 +349,7 @@ async fn refresh_failure_clears_the_session_and_emits_signed_out() {
             error_body("invalid_refresh_token", "refresh token is not valid"),
         ),
     ]);
-    let client = logged_in_client(&server).await;
+    let (client, secrets) = logged_in_client_with_secrets(&server).await;
     let mut events = client.subscribe();
 
     let error = client.devices().await.expect_err("refresh must fail");
@@ -362,6 +371,14 @@ async fn refresh_failure_clears_the_session_and_emits_signed_out() {
 
     let state = client.account_state().await.expect("anonymous state");
     assert!(!state.logged_in);
+    assert_eq!(state.state, CloudSessionState::SignedOut);
+    assert!(
+        !secrets
+            .secret_exists(REFRESH_TOKEN_REF)
+            .await
+            .expect("secret lookup"),
+        "an explicit auth failure must remove the refresh token"
+    );
 }
 
 #[tokio::test]
@@ -384,6 +401,224 @@ async fn concurrent_force_refresh_only_hits_the_refresh_endpoint_once() {
         .filter(|line| line.contains("/api/v1/auth/refresh"))
         .count();
     assert_eq!(refresh_count, 1);
+}
+
+#[tokio::test]
+async fn eight_concurrent_requests_share_one_refresh() {
+    let mut responses = vec![
+        MockResponse::json(200, auth_body("access-1", "refresh-1")),
+        MockResponse::json(200, json!({ "user": user_body() }).to_string()),
+        MockResponse::json(200, entitlements_body(true, 0, 1000)),
+    ];
+    // Every request receives a 401 first, which is the realistic "access token
+    // expired while eight requests were already in flight" case.
+    for _ in 0..8 {
+        responses.push(MockResponse::json(
+            401,
+            error_body("access_token_expired", "access token expired"),
+        ));
+    }
+    responses.push(MockResponse::json(200, auth_body("access-2", "refresh-2")));
+    for _ in 0..8 {
+        responses.push(MockResponse::json(200, "[]"));
+    }
+    let server = MockServer::start(responses);
+    let client = logged_in_client(&server).await;
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let client = client.clone();
+        handles.push(tokio::spawn(async move { client.devices().await }));
+    }
+    for handle in handles {
+        handle
+            .await
+            .expect("request task")
+            .expect("device request after refresh");
+    }
+
+    let requests = server.requests();
+    let refresh_count = requests
+        .iter()
+        .filter(|line| line.contains("/api/v1/auth/refresh"))
+        .count();
+    assert_eq!(
+        refresh_count, 1,
+        "refresh must be single-flight: {requests:?}"
+    );
+    let device_count = requests
+        .iter()
+        .filter(|line| line.contains("/api/v1/me/devices"))
+        .count();
+    assert_eq!(
+        device_count, 16,
+        "each of the eight requests should be retried exactly once: {requests:?}"
+    );
+}
+
+#[tokio::test]
+async fn cloud_streaming_relays_started_delta_delta_completed() {
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":null}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let server = MockServer::start(vec![
+        MockResponse::json(200, auth_body("access-1", "refresh-1")),
+        MockResponse::json(200, json!({ "user": user_body() }).to_string()),
+        MockResponse::json(200, entitlements_body(true, 0, 1000)),
+        MockResponse {
+            status: 200,
+            content_type: "text/event-stream",
+            body: sse_body.to_owned(),
+        },
+    ]);
+    let client = logged_in_client(&server).await;
+    let provider = CloudAiProvider::new(
+        client,
+        reqwest::Client::new(),
+        "verruckt-fast",
+        "verruckt-embedding",
+    );
+    let stream = provider
+        .chat_stream(ChatRequest::new(
+            "verruckt-fast",
+            vec![ChatMessage::user("hi")],
+        ))
+        .await
+        .expect("cloud stream");
+    let mut events = with_lifecycle(stream, "verruckt-fast");
+
+    let mut collected = Vec::new();
+    while let Some(event) = events.next().await {
+        collected.push(event.expect("stream event"));
+    }
+
+    assert_eq!(collected.len(), 4, "{collected:?}");
+    assert!(matches!(collected[0], AiStreamEvent::Started { .. }));
+    assert!(
+        matches!(&collected[1], AiStreamEvent::Delta { text } if text == "Hello"),
+        "{collected:?}"
+    );
+    assert!(
+        matches!(&collected[2], AiStreamEvent::Delta { text } if text == " world"),
+        "{collected:?}"
+    );
+    assert!(matches!(collected[3], AiStreamEvent::Completed { .. }));
+}
+
+#[tokio::test]
+async fn malformed_sse_event_becomes_a_terminal_failure() {
+    let server = MockServer::start(vec![
+        MockResponse::json(200, auth_body("access-1", "refresh-1")),
+        MockResponse::json(200, json!({ "user": user_body() }).to_string()),
+        MockResponse::json(200, entitlements_body(true, 0, 1000)),
+        MockResponse {
+            status: 200,
+            content_type: "text/event-stream",
+            body: "data: this-is-not-json\n\n".to_owned(),
+        },
+    ]);
+    let client = logged_in_client(&server).await;
+    let provider = CloudAiProvider::new(
+        client,
+        reqwest::Client::new(),
+        "verruckt-fast",
+        "verruckt-embedding",
+    );
+    let stream = provider
+        .chat_stream(ChatRequest::new(
+            "verruckt-fast",
+            vec![ChatMessage::user("hi")],
+        ))
+        .await
+        .expect("cloud stream");
+    let mut events = with_lifecycle(stream, "verruckt-fast");
+
+    let mut collected = Vec::new();
+    while let Some(event) = events.next().await {
+        collected.push(event.expect("stream event"));
+    }
+
+    assert!(matches!(collected[0], AiStreamEvent::Started { .. }));
+    assert!(
+        collected
+            .iter()
+            .any(|event| matches!(event, AiStreamEvent::Failed { .. })),
+        "malformed SSE must terminate with Failed: {collected:?}"
+    );
+    assert!(
+        !collected
+            .iter()
+            .any(|event| matches!(event, AiStreamEvent::Completed { .. })),
+        "malformed SSE must not report Completed: {collected:?}"
+    );
+}
+
+#[tokio::test]
+async fn cloud_streaming_upstream_error_does_not_hang() {
+    let server = MockServer::start(vec![
+        MockResponse::json(200, auth_body("access-1", "refresh-1")),
+        MockResponse::json(200, json!({ "user": user_body() }).to_string()),
+        MockResponse::json(200, entitlements_body(true, 0, 1000)),
+        MockResponse::json(500, error_body("upstream_error", "upstream returned 500")),
+    ]);
+    let client = logged_in_client(&server).await;
+    let provider = CloudAiProvider::new(
+        client,
+        reqwest::Client::new(),
+        "verruckt-fast",
+        "verruckt-embedding",
+    );
+    let error = match provider
+        .chat_stream(ChatRequest::new(
+            "verruckt-fast",
+            vec![ChatMessage::user("hi")],
+        ))
+        .await
+    {
+        Ok(_) => panic!("upstream error must be returned"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, AppError::CloudUnavailable(_)), "{error:?}");
+}
+
+#[tokio::test]
+async fn cloud_stream_can_be_cancelled_after_first_delta() {
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"first\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"second\"},\"finish_reason\":null}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let server = MockServer::start(vec![
+        MockResponse::json(200, auth_body("access-1", "refresh-1")),
+        MockResponse::json(200, json!({ "user": user_body() }).to_string()),
+        MockResponse::json(200, entitlements_body(true, 0, 1000)),
+        MockResponse {
+            status: 200,
+            content_type: "text/event-stream",
+            body: sse_body.to_owned(),
+        },
+    ]);
+    let client = logged_in_client(&server).await;
+    let provider = CloudAiProvider::new(
+        client,
+        reqwest::Client::new(),
+        "verruckt-fast",
+        "verruckt-embedding",
+    );
+    let mut stream = provider
+        .chat_stream(ChatRequest::new(
+            "verruckt-fast",
+            vec![ChatMessage::user("hi")],
+        ))
+        .await
+        .expect("cloud stream");
+    let first = stream.next().await.expect("first item").expect("delta");
+    assert_eq!(first.content, "first");
+    // Dropping the stream is the client cancellation path. The test passes if
+    // no panic, blocking, or background job remains.
+    drop(stream);
 }
 
 #[tokio::test]
@@ -560,6 +795,17 @@ async fn transient_restore_failure_keeps_the_refresh_token() {
     );
     let account = restarted.account_state().await.expect("account state");
     assert!(!account.logged_in);
+    assert_eq!(account.state, CloudSessionState::DegradedOffline);
+    assert_eq!(account.email.as_deref(), Some("e2e@example.com"));
+    assert_eq!(account.plan.as_deref(), Some("pro"));
+    assert!(
+        account
+            .entitlements
+            .as_ref()
+            .map(|value| value.official_ai)
+            .unwrap_or(false),
+        "degraded state should keep the last known entitlement snapshot"
+    );
     assert!(
         secrets
             .secret_exists(REFRESH_TOKEN_REF)

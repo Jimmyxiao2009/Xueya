@@ -41,6 +41,9 @@ pub struct HybridHit {
     pub chunk_id: Uuid,
     pub source_id: Uuid,
     pub source_title: String,
+    pub source_kind: String,
+    pub source_uri: Option<String>,
+    pub source_filename: Option<String>,
     pub text: String,
     pub vector_rank: Option<usize>,
     pub lexical_rank: Option<usize>,
@@ -135,6 +138,9 @@ impl<'a> HybridRetriever<'a> {
                 chunk_id,
                 source_id: Uuid::nil(),
                 source_title: "local document".to_owned(),
+                source_kind: "file".to_owned(),
+                source_uri: None,
+                source_filename: None,
                 text: chunk.text.clone(),
                 vector_rank: v_rank,
                 lexical_rank: l_rank,
@@ -277,6 +283,14 @@ impl<'a> HybridRetriever<'a> {
             {
                 hit.source_id = source.id;
                 hit.source_title = source.title;
+                hit.source_kind = match source.kind {
+                    crate::domain::SourceKind::File => "file",
+                    crate::domain::SourceKind::Url => "url",
+                    crate::domain::SourceKind::SearchResult => "search_result",
+                }
+                .to_owned();
+                hit.source_uri = source.uri;
+                hit.source_filename = source.original_filename;
             }
         }
         Ok(())

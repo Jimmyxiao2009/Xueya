@@ -171,6 +171,7 @@ export class FakeBackend {
     aiMode: "offline",
   };
   cloudAccount: {
+    state: "restoring" | "authenticated" | "degradedOffline" | "signedOut";
     loggedIn: boolean;
     email: string | null;
     plan: string | null;
@@ -178,7 +179,9 @@ export class FakeBackend {
     device: Record<string, unknown> | null;
     syncEnabled: boolean;
     baseUrl: string;
+    lastSuccessfulRefreshAt?: string | null;
   } = {
+    state: "signedOut",
     loggedIn: false,
     email: null,
     plan: null,
@@ -348,6 +351,7 @@ export class FakeBackend {
       plan: "pro",
     };
     this.cloudAccount = {
+      state: "authenticated",
       loggedIn: true,
       email,
       plan: "pro",
@@ -355,6 +359,7 @@ export class FakeBackend {
       device,
       syncEnabled: this.cloudAccount.syncEnabled,
       baseUrl: this.cloudAccount.baseUrl,
+      lastSuccessfulRefreshAt: NOW,
     };
     this.cloudDevices = [device];
     return this.cloudState();
@@ -373,13 +378,24 @@ export class FakeBackend {
       case "app_bootstrap":
       case "app_get_info":
         return {
-          version: "0.1.0",
+          version: "0.1.0-rc.1",
           dataDir: "/tmp/verruckt",
           providerCount: 1,
           sourceCount: this.sources.length,
           courseCount: this.routes.length,
           searchConfigured: Boolean(this.settings.braveApiKey),
         };
+      case "competition_demo_seed": {
+        const route = this.routes.find((entry) => entry.id === "route-geometry");
+        if (!route) {
+          throw { code: "not_found", message: "demo route not found", retryable: false };
+        }
+        route.metadataJson = JSON.stringify({
+          ...JSON.parse(route.metadataJson),
+          competitionDemo: true,
+        });
+        return route.id;
+      }
       case "course_list":
         return this.routes.map((route) => this.courseDto(route));
       case "course_get": {
@@ -633,6 +649,7 @@ export class FakeBackend {
       }
       case "cloud_logout":
         this.cloudAccount = {
+          state: "signedOut",
           loggedIn: false,
           email: null,
           plan: null,
@@ -640,6 +657,7 @@ export class FakeBackend {
           device: null,
           syncEnabled: this.cloudAccount.syncEnabled,
           baseUrl: this.cloudAccount.baseUrl,
+          lastSuccessfulRefreshAt: null,
         };
         this.cloudDevices = [];
         return this.cloudState();

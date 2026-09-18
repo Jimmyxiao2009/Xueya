@@ -61,7 +61,14 @@ export interface CloudDevice {
   lastSeenAt: string;
 }
 
+export type CloudSessionState =
+  | "restoring"
+  | "authenticated"
+  | "degradedOffline"
+  | "signedOut";
+
 export interface CloudAccountState {
+  state: CloudSessionState;
   loggedIn: boolean;
   email?: string | null;
   userId?: string | null;
@@ -70,6 +77,7 @@ export interface CloudAccountState {
   device?: CloudDevice | null;
   syncEnabled: boolean;
   baseUrl: string;
+  lastSuccessfulRefreshAt?: string | null;
 }
 
 export interface CloudMe {
@@ -323,6 +331,9 @@ export interface TutorCitation {
   chunkId: string;
   sourceId: string;
   sourceTitle: string;
+  sourceKind: string;
+  sourceUri?: string | null;
+  sourceFilename?: string | null;
   text: string;
 }
 
@@ -400,6 +411,7 @@ export function cancelTutorStream(requestId: string): void {
 export const api = {
   bootstrap: () => call<AppInfo>("app_bootstrap"),
   info: () => call<AppInfo>("app_get_info"),
+  competitionDemoSeed: () => call<string>("competition_demo_seed"),
   settingsGet: () => call<SettingsShape>("settings_get"),
   settingsUpdate: (input: { searchProvider?: string; braveApiKey?: string; aiMode?: string }) =>
     call<SettingsShape>("settings_update", { input }),
