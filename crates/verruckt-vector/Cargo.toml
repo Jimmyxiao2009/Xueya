@@ -1,0 +1,53 @@
+[package]
+name = "verruckt-vector"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Verruckt embedded vector engine: exact + HNSW search with persistent, crash-safe on-disk format."
+license = "MIT"
+publish = false
+
+[lib]
+name = "verruckt_vector"
+path = "src/lib.rs"
+
+# Self-contained research crate. The mainline `verruckt` binary does NOT depend
+# on this crate unless the `verruckt-vector` feature is enabled (see src-tauri).
+[dependencies]
+memmap2 = "0.9"
+bytemuck = { version = "1", features = ["extern_crate_alloc"] }
+parking_lot = "0.12"
+rand = { version = "0.8", features = ["small_rng"] }
+rand_chacha = "0.3"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+criterion = "0.5"
+proptest = "1.11"
+tempfile = "3"
+# SQLite baseline used by benchmarks to compare against the current Verruckt
+# SQLite vector implementation (blob storage + in-memory brute force cosine).
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# [[bench]]
+# name = "engine"
+# harness = false
+
+# Full benchmark matrix runner; writes a Markdown report to stdout so that
+# docs/BENCHMARKS.md can be generated from real measurements.
+# [[bin]]
+# name = "verruckt-vector-report"
+# path = "src/bin/report.rs"
+
+# Child process used by crash-recovery integration tests (hard exits itself).
+# [[bin]]
+# name = "crash-child"
+# path = "src/bin/crash_child.rs"
+
+[profile.bench]
+debug = false
+
+[profile.release]
+debug = false
+

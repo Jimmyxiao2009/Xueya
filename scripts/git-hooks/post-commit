@@ -1,0 +1,29 @@
+#!/bin/sh
+# Mirror every commit to the B: drive copy of this repo.
+# Failures are printed but do not undo the commit.
+bare="B:/学涯.git"
+work="B:/学涯"
+
+if [ ! -d "$bare" ]; then
+  echo "post-commit: skip sync, $bare not found" >&2
+  exit 0
+fi
+
+echo "post-commit: syncing to $bare"
+if ! git --git-dir="$bare" fetch --prune origin; then
+  echo "post-commit: fetch into $bare failed" >&2
+  exit 0
+fi
+
+if [ -d "$work" ]; then
+  # Incomplete/broken B:\学涯\.git must not intercept checkout.
+  if [ -d "$work/.git" ] && [ ! -f "$work/.git/HEAD" ]; then
+    rm -rf "$work/.git"
+  fi
+  current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+  git --git-dir="$bare" --work-tree="$work" checkout -f "$current_branch" 2>/dev/null || \
+  git --git-dir="$bare" --work-tree="$work" checkout -f main 2>/dev/null
+  echo "post-commit: updated $work (branch: $current_branch)"
+fi
+
+exit 0
