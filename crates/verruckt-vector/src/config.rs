@@ -39,6 +39,7 @@ impl Metric {
         }
     }
 
+    #[allow(dead_code)] // used by diagnostics/report tooling
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Metric::Cosine => "cosine",
@@ -82,6 +83,7 @@ impl Algorithm {
         }
     }
 
+    #[allow(dead_code)] // used by diagnostics/report tooling
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Algorithm::Exact => "exact",

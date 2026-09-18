@@ -180,6 +180,7 @@ impl MetadataFilter {
         self.predicates.iter().all(|predicate| predicate.matches(meta))
     }
 
+    #[allow(dead_code)] // kept for adapter use
     pub(crate) fn predicates(&self) -> &[Predicate] {
         &self.predicates
     }
