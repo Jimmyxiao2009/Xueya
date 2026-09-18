@@ -22,6 +22,7 @@ pub struct AppInfoDto {
 pub struct SettingsDto {
     pub search_provider: String,
     pub has_brave_api_key: bool,
+    pub ai_mode: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -29,6 +30,7 @@ pub struct SettingsDto {
 pub struct SettingsUpdateInput {
     pub search_provider: Option<String>,
     pub brave_api_key: Option<String>,
+    pub ai_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

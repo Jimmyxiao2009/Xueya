@@ -1,4 +1,5 @@
 use crate::ai::registry::ProviderRegistry;
+use crate::cloud::CloudAccountClient;
 use crate::db::migrate;
 use crate::error::AppError;
 use crate::jobs::manager::JobManager;
@@ -6,6 +7,7 @@ use crate::knowledge::vector_index::{SqliteVectorIndex, VectorIndex};
 use crate::knowledge_fs::blob_store::BlobStore;
 use crate::search::SearchProviderRegistry;
 use crate::secrets::keyring_store::{KeyringSecretStore, SecretStore};
+use crate::sync::{CloudFileSyncService, CloudSyncService};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
@@ -41,12 +43,15 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub http: reqwest::Client,
     pub secrets: Arc<dyn SecretStore>,
+    pub cloud: Arc<CloudAccountClient>,
+    pub sync: Arc<CloudSyncService>,
     pub providers: ProviderRegistry,
     pub search: SearchProviderRegistry,
     pub vector_index: Arc<dyn VectorIndex>,
     pub jobs: JobManager,
     pub paths: AppPaths,
     pub blobs: BlobStore,
+    pub files: Arc<CloudFileSyncService>,
 }
 
 impl AppState {
@@ -77,23 +82,46 @@ impl AppState {
             .build()
             .map_err(|error| AppError::Network(error.to_string()))?;
 
-        let providers = ProviderRegistry::new(pool.clone(), http.clone(), secrets.clone());
+        let cloud = Arc::new(CloudAccountClient::new(
+            http.clone(),
+            secrets.clone(),
+            pool.clone(),
+            crate::cloud::default_cloud_base_url(),
+        ));
+        cloud.initialize().await?;
+        // A crash during a pull-apply can leave the guard set. Clearing it at
+        // boot makes sure subsequent local writes are journaled again.
+        sqlx::query("UPDATE sync_apply_guard SET active = 0 WHERE id = 1")
+            .execute(&pool)
+            .await?;
+        let sync = Arc::new(CloudSyncService::new(cloud.clone(), pool.clone()));
+        let providers = ProviderRegistry::new(pool.clone(), http.clone(), secrets.clone())
+            .with_cloud(cloud.clone());
         let search = SearchProviderRegistry::new(http.clone());
         let vector_index: Arc<dyn VectorIndex> = Arc::new(SqliteVectorIndex::new(pool.clone()));
         vector_index.rebuild().await?;
         let jobs = JobManager::new(pool.clone());
         let blobs = BlobStore::new(paths.blobs_dir.clone());
+        let files = Arc::new(CloudFileSyncService::new(
+            cloud.clone(),
+            pool.clone(),
+            blobs.clone(),
+            http.clone(),
+        ));
 
         Ok(Self {
             pool,
             http,
             secrets,
+            cloud,
+            sync,
             providers,
             search,
             vector_index,
             jobs,
             paths,
             blobs,
+            files,
         })
     }
 

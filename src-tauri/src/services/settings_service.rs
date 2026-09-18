@@ -6,8 +6,21 @@ use sqlx::SqlitePool;
 
 const SEARCH_PROVIDER_KEY: &str = "search_provider";
 const BRAVE_SECRET_REF: &str = "secret://search/brave";
+const AI_MODE_KEY: &str = "ai_provider_mode";
 
 pub async fn initialize(state: &AppState) -> Result<(), AppError> {
+    if get_setting_string(&state.pool, AI_MODE_KEY)
+        .await?
+        .is_none()
+    {
+        let byok_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM providers WHERE enabled = 1 AND base_url NOT LIKE 'mock://%'",
+        )
+        .fetch_one(&state.pool)
+        .await?;
+        let mode = if byok_count > 0 { "byok" } else { "offline" };
+        set_setting_string(&state.pool, AI_MODE_KEY, mode).await?;
+    }
     let settings = get_settings(state).await?;
     if settings.has_brave_api_key {
         if let Ok(api_key) = state.secrets.get_secret(BRAVE_SECRET_REF).await {
@@ -22,9 +35,13 @@ pub async fn get_settings(state: &AppState) -> Result<SettingsDto, AppError> {
         .await?
         .unwrap_or_else(|| "brave".into());
     let has_brave_api_key = state.secrets.secret_exists(BRAVE_SECRET_REF).await?;
+    let ai_mode = get_setting_string(&state.pool, AI_MODE_KEY)
+        .await?
+        .unwrap_or_else(|| "offline".into());
     Ok(SettingsDto {
         search_provider,
         has_brave_api_key,
+        ai_mode,
     })
 }
 
@@ -49,6 +66,14 @@ pub async fn update_settings(
             state.secrets.set_secret(BRAVE_SECRET_REF, trimmed).await?;
             state.search.configure_brave(trimmed)?;
         }
+    }
+    if let Some(mode) = input.ai_mode.as_deref() {
+        if !matches!(mode, "offline" | "byok" | "cloud") {
+            return Err(AppError::InvalidInput(
+                "AI mode must be 'offline', 'byok' or 'cloud'".into(),
+            ));
+        }
+        set_setting_string(&state.pool, AI_MODE_KEY, mode).await?;
     }
     get_settings(state).await
 }
