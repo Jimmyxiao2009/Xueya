@@ -45,8 +45,8 @@ marked `SKIPPED` with the technical reason.
 | I6 | Existing-profile migration fixture | PASS | Migrations 1..5 applied; fixture counts preserved (`courses=2 nodes=12 sources=1 adaptations=5`); `cloud_account_snapshot` created |
 | I7 | Uninstall registry entry | PASS | `HKCU\...\Uninstall\Orbit`, DisplayName `Orbit`, Publisher `verruckt`, InstallLocation `%LOCALAPPDATA%\Orbit` |
 | I8 | Binary metadata | PASS | ProductName `Orbit`, FileVersion/ProductVersion `0.1.0-rc.1`; installed exe CompanyName `verruckt` |
-| I9 | NSIS SHA-256 | PASS | `c5b26e36cded72bc96e4e1f80e4b6b87ff0de811d2ef872c811976b2feaea5426` |
-| I10 | Installed exe SHA-256 | PASS | `7ad47b9fd5471b2ae5bd1417588e9b3e80d50cee0a39a9418b917d727680b1e4` |
+| I9 | NSIS SHA-256 | PASS | `b7f332287ec35c8019ae9542da1805b50a48caf4e08cfd287e9bece2d16957ee` |
+| I10 | Installed exe SHA-256 | PASS | `b488a8b1653a1f1ffffcbfdb040e5c00fca876e41dc3a92c63d3e3e1a324d7f5` |
 | I11 | MSI bundle | SKIPPED | Tauri rejects the non-numeric pre-release identifier `rc.1`; changing it would break the frozen version. NSIS is the supported Windows artifact. |
 
 ## Golden Path / WebView
