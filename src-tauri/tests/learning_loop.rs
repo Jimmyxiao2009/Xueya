@@ -455,3 +455,120 @@ async fn every_question_kind_survives_the_migration() {
         assert!(!empty.grade.feedback.is_empty());
     }
 }
+
+#[tokio::test]
+async fn a_weak_free_text_answer_goes_through_evaluation_to_adaptation() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "射影几何").await;
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+    let node = nodes[0].clone();
+    let started = LearningService::new(&state)
+        .start(node.id, None)
+        .await
+        .expect("session");
+
+    // The offline evaluator marks this as incorrect, which is the free-text
+    // equivalent of a failed check question.
+    let response = LearningService::new(&state)
+        .respond(started.session.id, "不知道", None)
+        .await
+        .expect("evaluation");
+    assert!(!response.diagnoses.is_empty());
+    assert_eq!(
+        response
+            .adaptation
+            .as_ref()
+            .map(|event| event.kind.as_str()),
+        Some("review_inserted")
+    );
+    let inserted = response.inserted_node_id.expect("review node id");
+
+    let after = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes after");
+    assert_eq!(after.len(), nodes.len() + 1);
+    assert!(after
+        .iter()
+        .any(|candidate| candidate.id == inserted && candidate.kind == NodeKind::Review.as_str()));
+
+    // A repeated weak answer must resolve to the same practice node.
+    LearningService::new(&state)
+        .respond(started.session.id, "还是不知道", None)
+        .await
+        .expect("second evaluation");
+    let after_twice = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes after twice");
+    assert_eq!(after_twice.len(), after.len());
+    assert_eq!(
+        after_twice
+            .iter()
+            .filter(|candidate| candidate.id == inserted)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn an_adaptation_survives_a_database_reopen_and_stays_idempotent() {
+    let (state, dir) = test_state().await;
+    let course_id = create_route(&state, "射影几何").await;
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+    let started = LearningService::new(&state)
+        .start(nodes[0].id, None)
+        .await
+        .expect("session");
+
+    let turn = TutorService::new(&state)
+        .turn(started.session.id, "我还是不懂为什么要这样定义")
+        .await
+        .expect("tutor turn");
+    let review_id = turn.inserted_node_id.expect("inserted review node");
+    assert_eq!(
+        course_repo::list_nodes(&state.pool, course_id)
+            .await
+            .expect("nodes after")
+            .len(),
+        nodes.len() + 1
+    );
+
+    // Close the SQLite pool and rebuild the app state from the same directory:
+    // the adaptation must be a database fact, not in-memory tutor state.
+    state.pool.close().await;
+    drop(state);
+    let reopened = AppState::new_with_secrets(
+        AppPaths::new(dir.path()),
+        Arc::new(InMemorySecretStore::new()),
+    )
+    .await
+    .expect("reopen app state");
+
+    let after = course_repo::list_nodes(&reopened.pool, course_id)
+        .await
+        .expect("nodes after reopen");
+    assert!(after
+        .iter()
+        .any(|node| node.id == review_id && node.kind == NodeKind::Review.as_str()));
+
+    // The same diagnosis on the reopened database must resolve to the same
+    // review node instead of inserting a second one.
+    TutorService::new(&reopened)
+        .turn(started.session.id, "还是不明白")
+        .await
+        .expect("second turn after reopen");
+    let after_twice = course_repo::list_nodes(&reopened.pool, course_id)
+        .await
+        .expect("nodes after second turn");
+    assert_eq!(after_twice.len(), after.len());
+    assert_eq!(
+        after_twice
+            .iter()
+            .filter(|node| node.id == review_id)
+            .count(),
+        1
+    );
+}

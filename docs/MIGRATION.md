@@ -104,9 +104,32 @@ to *serve* the prototype's loop rather than replace it.
 | `jobs/` | route generation takes seconds; the UI needs real progress |
 | `ingest/` + `knowledge/` | the Research layer — sources actually feed the plan |
 | `secrets/` | API keys must never reach the WebView |
+| `migrations/0003_local_ai_core.sql` | production local AI: real providers, embeddings, hybrid retrieval, adaptation idempotency, capability cache, usage events |
+| `ai/stream.rs`, `tutor_send_stream` | incremental tutor output without moving the source of truth out of Rust |
 
 Nothing in this list changes what the user sees; each one fills in a part of the
 loop that the prototype drew but could not execute.
+
+### 3.1 Local AI production migration (`0003_local_ai_core.sql`)
+
+Migration 0003 is additive and safe on an existing database:
+
+* provider protocol (`auto` / `responses` / `chat_completions`) and
+  `provider_capability_cache`;
+* chunk indexing metadata: `source_id`, `route_id`, `text_hash`,
+  `metadata_json`, `embedding_status`, plus `source_route_links`;
+* `embedding_index_metadata` and `source_index_state`, so a provider or
+  dimension change marks the affected sources for reindex instead of mixing
+  vector spaces;
+* persistent `embedding_cache` keyed by normalised text + provider identity +
+  model + dimension config;
+* `source_summaries`, `session_summaries` and `usage_events`;
+* `quiz_questions.generated_by` so generated questions are never confused with
+  authored ones;
+* FTS5 external-content `chunk_fts` with insert/update/delete triggers.
+
+The migration is covered by `db::migrate::tests::local_ai_core_migration_is_additive`
+and by the retrieval/learning integration tests.
 
 ---
 

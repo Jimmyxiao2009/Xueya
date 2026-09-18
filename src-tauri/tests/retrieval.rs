@@ -7,13 +7,18 @@
 use std::sync::Arc;
 use tempfile::TempDir;
 use uuid::Uuid;
-use verruckt_lib::db::repo::{chunks as chunk_repo, sources as source_repo};
+use verruckt_lib::ai::stream::AiStreamEvent;
+use verruckt_lib::db::repo::{
+    chunks as chunk_repo, courses as course_repo, sources as source_repo,
+};
 use verruckt_lib::domain::SourceKind;
 use verruckt_lib::knowledge::embedding_cache;
 use verruckt_lib::knowledge::hybrid::{HybridRetriever, RetrievalFilter};
 use verruckt_lib::secrets::keyring_store::InMemorySecretStore;
 use verruckt_lib::services::course_service::{CourseService, RouteRequest};
 use verruckt_lib::services::ingestion_service::{IngestInput, IngestionService};
+use verruckt_lib::services::learning_service::LearningService;
+use verruckt_lib::services::tutor_service::TutorService;
 use verruckt_lib::state::{AppPaths, AppState};
 
 async fn test_state() -> (AppState, TempDir) {
@@ -238,4 +243,64 @@ fn route_request_preserves_source_ids() {
         ..RouteRequest::new("射影几何")
     };
     assert_eq!(request.source_ids.len(), 1);
+}
+
+#[tokio::test]
+async fn streaming_tutor_citations_map_back_to_the_retrieved_chunk() {
+    let (state, _dir) = test_state().await;
+    let source_id = ingest_text(
+        &state,
+        "projective.txt",
+        "平行线在射影平面中最终相交于无穷远点。齐次坐标 [1:2:0] 表示方向 (1,2) 的无穷远点。",
+    )
+    .await;
+    let route_id = create_route(&state, "射影几何", vec![source_id]).await;
+    let nodes = course_repo::list_nodes(&state.pool, route_id)
+        .await
+        .expect("nodes");
+    let started = LearningService::new(&state)
+        .start(nodes[0].id, None)
+        .await
+        .expect("session");
+
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let turn = TutorService::new(&state)
+        .turn_stream(
+            started.session.id,
+            "根据我的资料，平行线最终在哪里相交？",
+            sender,
+        )
+        .await
+        .expect("streamed tutor turn");
+
+    assert!(!turn.message.trim().is_empty());
+    assert_eq!(turn.grounding, "source_grounded");
+    assert!(
+        !turn.citations.is_empty(),
+        "expected the streamed answer to cite the local source"
+    );
+    assert!(
+        turn.citations
+            .iter()
+            .any(|citation| citation.text.contains("无穷远点")),
+        "citation should point at the retrieved chunk: {:?}",
+        turn.citations
+    );
+
+    let mut events = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        events.push(event);
+    }
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AiStreamEvent::Delta { text } if !text.is_empty())),
+        "expected at least one non-empty delta: {events:?}"
+    );
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, AiStreamEvent::CitationMetadata { .. })));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, AiStreamEvent::Completed { .. })));
 }

@@ -159,26 +159,91 @@ The wire DTOs use the backend names; `src/api.ts` is where the rename happens.
 
 ---
 
-## 5. AI provider boundary (BYOK)
+## 5. Local AI core (BYOK)
+
+The local AI core is deliberately provider-neutral. Everything below runs in
+the Rust backend; the frontend only sees typed DTOs and `configured` /
+`maskedHint` provider metadata.
+
+### 5.1 Provider boundary
 
 ```
-ai/traits.rs        trait ChatProvider  { async fn complete(...) }
-                    trait EmbeddingProvider { async fn embed(...) }
-ai/mock.rs          MockProvider — deterministic hashed bag-of-words with CJK
-                    bigrams, 256 dims, L2-normalised. No network, no key.
-ai/openai_compatible.rs  real provider; base URL + model are configurable
-ai/registry.rs      default_chat_provider() / default_embedding_provider()
+ai/traits.rs             ChatProvider, EmbeddingProvider, ChatRequest/Response,
+                         ChatDelta, streaming + embedding validation
+ai/openai_compatible.rs  real HTTP provider: /v1/chat/completions,
+                         /v1/responses, /v1/embeddings, SSE streaming
+ai/mock.rs               MockProvider — deterministic offline fallback
+ai/registry.rs           ProviderRegistry, BYOK secrets, capability probing
+ai/capabilities.rs       ProviderCapabilities + preferred protocol
+ai/http.rs               retry/timeout policy
+ai/stream.rs             AiStreamEvent lifecycle
+ai/structured.rs         structured generation + one repair retry
+ai/prompts.rs            versioned prompts with explicit untrusted-content
+                         boundaries
+ai/schemas.rs            CurriculumPlan / TutorTurn / FreeTextEvaluation /
+                         QuizGeneration / SourceSummary
 ```
 
-* `registry::is_mock_active()` is how a service knows whether it is running
-  without a key, so it can choose conservative behaviour.
+* Protocol support is `auto | responses | chat_completions`. `auto` probes
+  both endpoints and prefers Responses only when it actually answers; Chat
+  Completions remains first-class for third-party gateways.
+* `/v1/chat/completions` and `/v1/embeddings` are preserved as stable
+  OpenAI-compatible surfaces. `/v1/responses` is additive.
+* Capability detection is a real probe with minimal inference calls, cached in
+  `provider_capability_cache`. It records chat, streaming, structured output,
+  embeddings and the observed embedding dimension.
+* No embedding dimension is hardcoded. The dimension comes from the configured
+  provider, is persisted in `embedding_index_metadata`, and a change forces a
+  reindex instead of silently mixing vector spaces.
+* `MockProvider` is backend-only. It never pretends to be a real model: every
+  artefact it produces is tagged `generatedBy = "mock"` and the UI says so.
+
+### 5.2 Keys and secrets
+
 * **Keys never reach the frontend.** `provider_upsert` writes the key into the
-  OS keyring via `secrets/keyring_store.rs`. `provider_list` returns
-  `hasApiKey: boolean` and nothing else. There is no command that returns a key,
-  and `AppError` redacts anything that looks like a secret before serialising.
-* Mock embeddings make retrieval and citations work offline: the same 256-dim
-  space is used for documents and queries, so `knowledge_search` returns real
-  ranked chunks even with zero configuration.
+  OS keyring via `secrets/keyring_store.rs`. `provider_list` returns only
+  `hasApiKey: boolean` and a masked hint. There is no command that returns a
+  key, and `AppError` redacts anything that looks like a secret before it is
+  serialised, logged or emitted in a stream event.
+
+### 5.3 Ingestion and retrieval
+
+* Imported material is **untrusted reference content**. It is passed to the
+  model only in a clearly delimited `UNTRUSTED REFERENCE CONTENT` user section;
+  it never enters the system instruction. Prompts are tested for this boundary.
+* Source parse → chunk → embed → index is one pipeline. The embedding cache is
+  keyed by `SHA-256(normalised text + provider identity + model + dimension
+  config)`, so identical chunks are not re-embedded.
+* Retrieval is hybrid: FTS5 lexical search plus the persistent SQLite vector
+  index, merged with reciprocal-rank-style scoring. Route, source and knowledge
+  point filters are applied in SQL, so one route cannot leak another route's
+  material.
+* URL ingestion rejects `localhost`, loopback, private, link-local and
+  cloud-metadata addresses, plus `file:`/`ftp:` schemes, and re-validates DNS
+  and every redirect before following it.
+
+### 5.4 Tutor and citations
+
+* The tutor retrieves route-scoped evidence, labels it `[C1]`, `[C2]`, … and
+  maps labels back to real chunk/source rows in Rust. The model never sees or
+  emits database IDs.
+* Grounding is explicit: `source_grounded`, `model_knowledge`, or
+  `insufficient_source` when the learner asks about "my materials" and nothing
+  relevant was retrieved.
+* The streaming tutor uses a plain-text prompt (`TUTOR_STREAM_V1`) so tokens
+  can be rendered incrementally. An optional final `DIAGNOSIS: {...}` line is
+  stripped before display and fed into the same adaptation pipeline as the
+  non-streaming path.
+
+### 5.5 One adaptation policy
+
+```
+Diagnosis -> AdaptationPolicy -> AdaptationDecision -> AdaptationService
+```
+
+Quiz grading, free-text evaluation and tutor diagnosis all call the same
+`AdaptationService`. A real route change is idempotent per knowledge point and
+review reason, including across a database close/reopen.
 
 ---
 

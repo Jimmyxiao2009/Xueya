@@ -275,6 +275,14 @@ export interface TutorTurn {
   adaptation?: AdaptationEvent | null;
 }
 
+/** Event shape emitted by the Rust `tutor_stream` event. */
+export type AiStreamEvent =
+  | { type: "started"; model: string }
+  | { type: "delta"; text: string }
+  | { type: "citationMetadata"; citations: string[] }
+  | { type: "completed"; finishReason?: string | null }
+  | { type: "failed"; code: string; message: string };
+
 export function errorOf(value: unknown): AppErrorShape {
   if (typeof value === "object" && value !== null && "code" in value && "message" in value) {
     return value as AppErrorShape;
@@ -362,6 +370,30 @@ export const api = {
     call<QuizResult>("quiz_submit", { input }),
   tutorSend: (input: { sessionId: string; message: string }) =>
     call<TutorTurn>("tutor_send", { input }),
+  /**
+   * Streams a tutor turn. Deltas arrive through the `tutor_stream` event and
+   * the resolved value is the same authoritative turn as `tutorSend`, so the
+   * caller can replace the buffered text with the final message.
+   */
+  tutorSendStream: async (
+    input: { sessionId: string; message: string; requestId?: string },
+    onEvent: (event: AiStreamEvent) => void,
+  ): Promise<TutorTurn> => {
+    const requestId =
+      input.requestId ?? `tutor-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const { listen } = await import("@tauri-apps/api/event");
+    const unlisten = await listen<{ requestId: string; event: AiStreamEvent }>(
+      "tutor_stream",
+      (event) => {
+        if (event.payload.requestId === requestId) onEvent(event.payload.event);
+      },
+    );
+    try {
+      return await call<TutorTurn>("tutor_send_stream", { input: { ...input, requestId } });
+    } finally {
+      unlisten();
+    }
+  },
 
   /* jobs */
   jobGet: (id: string) => call<Job>("job_get", { id }),

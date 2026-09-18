@@ -780,6 +780,15 @@ pub struct TutorTurnInput {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TutorStreamInput {
+    pub session_id: Uuid,
+    pub message: String,
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TutorCitationDto {

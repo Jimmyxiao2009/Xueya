@@ -103,7 +103,8 @@ never re-created after the user deletes them.
 | `provider_list` | — | `Provider[]` |
 | `provider_upsert` | `{ input: ProviderInput }` | `Provider` |
 | `provider_delete` | `{ id }` | `void` |
-| `provider_test` | `{ id }` | `{ ok: boolean; message: string }` |
+| `provider_test` | `{ id }` | `{ ok, message, protocol?, capabilities? }` |
+| `provider_stream_chat` | `{ input: { providerId, prompt, requestId? } }` | `void` (events) |
 
 ```ts
 interface Provider {
@@ -114,12 +115,30 @@ interface Provider {
   embeddingModel: string;
   enabled: boolean;
   hasApiKey: boolean;   // <- the key itself is never returned
+  protocol: "auto" | "responses" | "chat_completions";
+  maskedHint?: string | null;
+}
+
+interface ProviderCapabilities {
+  chatCompletions: boolean;
+  responses: boolean;
+  streaming: boolean;
+  structuredOutput: boolean;
+  embeddings: boolean;
+  embeddingDimension?: number | null;
+  visionOptional: boolean;
+  protocol?: string | null;
+  probeErrors: string[];
 }
 ```
 
 `apiKey` is accepted on `provider_upsert`, written to the OS keyring
 (`secrets/keyring_store.rs`), and **never read back over IPC**. There is no
 command that returns a key.
+
+`provider_stream_chat` emits `provider_stream` events shaped as
+`{ requestId, event }`, where `event` is one of `started`, `delta`,
+`citationMetadata`, `completed`, `failed`. The event never contains a key.
 
 ### Sources
 
@@ -131,6 +150,7 @@ command that returns a key.
 | `source_import_url` | `{ input: { url, title? } }` | `Job` |
 | `source_delete` | `{ id }` | `void` |
 | `source_reindex` | `{ id }` | `Job` |
+| `source_summarize` | `{ id }` | `SourceSummary` |
 
 Import commands return immediately with a `Job`. When the job completes,
 `resultJson` is `{"sourceId":"<id>"}` — that is how the frontend learns the new
@@ -144,10 +164,13 @@ source's id (`sourceStore.readSourceId`).
 | `knowledge_search` | `{ input: { query, limit? } }` | `KnowledgeHit[]` |
 | `knowledge_get_object` | `{ id, path? }` | `{ id, kind, title, description? }` |
 | `knowledge_get_related` | `{ id, depth? }` | `KnowledgeHit[]` |
+| `knowledge_retrieval_debug` | `{ input: { query, routeId?, sourceId?, knowledgePointId?, limit? } }` | `RetrievalHit[]` (dev-only) |
 
 `knowledge_search` works with **no configuration**: with no provider key the
 query and the documents are embedded by the same deterministic `MockProvider`
-space, so ranking and citations are real, just not semantic.
+space, so ranking and citations are real, just not semantic. `knowledge_search`
+uses the hybrid retriever (FTS5 + vector); `knowledge_retrieval_debug` exposes
+the component scores for the dev inspector.
 
 ### Routes (backend: "courses")
 
@@ -195,6 +218,7 @@ the node also changed the roadmap.
 | `quiz_submit` | `{ input: { questionId, answer: string[], sessionId? } }` | `QuizResult` |
 | `learning_respond` | `{ input: { sessionId, answer } }` | `LearningEvaluation` |
 | `tutor_send` | `{ input: { sessionId, message } }` | `TutorTurn` |
+| `tutor_send_stream` | `{ input: { sessionId, message, requestId? } }` | `TutorTurn` (events) |
 
 `learning_respond` is the model's door for answers string matching cannot judge
 (`short`). It requires an active session and a non-empty answer, writes a
@@ -208,6 +232,14 @@ adaptation and splices a `加练 · …` review node after the current node — 
 same node a failed check question would have created, never a second one.
 `TutorTurn.adaptation` carries the roadmap change (kind `review_inserted`) so
 the chat can say what happened.
+
+`tutor_send_stream` runs the same retrieval/citation/adaptation pipeline, but
+consumes the provider SSE stream and emits `tutor_stream` events shaped as
+`{ requestId, event }` (`started`, `delta`, `citationMetadata`, `completed`,
+`failed`). The returned `TutorTurn` is authoritative, so the caller replaces
+the buffered text with it after the stream ends. The streamed prompt uses
+inline `[C1]` citations and an optional final `DIAGNOSIS:` line; Rust strips
+that line and maps labels to real chunks before persisting.
 
 ```ts
 interface QuizResult {

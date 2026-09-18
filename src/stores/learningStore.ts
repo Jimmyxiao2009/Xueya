@@ -7,6 +7,7 @@ import {
   type QuizQuestion,
   type LearningEvaluation,
   type QuizResult,
+  type TutorTurn,
 } from "@/api";
 
 export type MessageKind = "text" | "summary" | "user" | "answer";
@@ -69,6 +70,20 @@ const emptyDraft: QuizDraft = {
 
 let messageSeq = 0;
 const nextId = () => `m${++messageSeq}`;
+
+/** Streaming events only exist inside the Tauri WebView; tests use the fake IPC. */
+const streamingAvailable =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+function tutorNote(turn: TutorTurn): string | undefined {
+  if (turn.adaptation?.kind === "review_inserted") {
+    return "已在你的路线里插入一节针对性加练";
+  }
+  if (turn.generatedBy === "mock") {
+    return "离线回答 · 未接入模型";
+  }
+  return undefined;
+}
 
 export function currentQuestion(state: {
   lesson: Lesson | null;
@@ -282,27 +297,53 @@ export const useLearningStore = create<LearningState>((set, get) => ({
       ],
     }));
     try {
-      const turn = await api.tutorSend({ sessionId, message: trimmed });
-      set((state) => ({
-        messages: [
-          ...state.messages,
-          {
-            id: nextId(),
-            role: "assistant",
-            kind: "text",
-            text: turn.message,
-            // A tutor turn can change the roadmap. Saying so here is the
-            // difference between adapting and silently rewriting things.
-            note:
-              turn.adaptation?.kind === "review_inserted"
-                ? "已在你的路线里插入一节针对性加练"
-                : turn.generatedBy === "mock"
-                  ? "离线回答 · 未接入模型"
-                  : undefined,
+      if (streamingAvailable) {
+        const assistantId = nextId();
+        set((state) => ({
+          messages: [
+            ...state.messages,
+            { id: assistantId, role: "assistant", kind: "text", text: "" },
+          ],
+        }));
+        const turn = await api.tutorSendStream(
+          { sessionId, message: trimmed, requestId: assistantId },
+          (event) => {
+            if (event.type !== "delta") return;
+            set((state) => ({
+              messages: state.messages.map((message) =>
+                message.id === assistantId
+                  ? { ...message, text: message.text + event.text }
+                  : message,
+              ),
+            }));
           },
-        ],
-        lastAdaptation: turn.adaptation ?? state.lastAdaptation,
-      }));
+        );
+        set((state) => ({
+          messages: state.messages.map((message) =>
+            message.id === assistantId
+              ? { ...message, text: turn.message, note: tutorNote(turn) }
+              : message,
+          ),
+          lastAdaptation: turn.adaptation ?? state.lastAdaptation,
+        }));
+      } else {
+        const turn = await api.tutorSend({ sessionId, message: trimmed });
+        set((state) => ({
+          messages: [
+            ...state.messages,
+            {
+              id: nextId(),
+              role: "assistant",
+              kind: "text",
+              text: turn.message,
+              // A tutor turn can change the roadmap. Saying so here is the
+              // difference between adapting and silently rewriting things.
+              note: tutorNote(turn),
+            },
+          ],
+          lastAdaptation: turn.adaptation ?? state.lastAdaptation,
+        }));
+      }
     } catch (error) {
       set((state) => ({
         messages: [

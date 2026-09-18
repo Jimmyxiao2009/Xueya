@@ -11,7 +11,7 @@
 
 use super::prompts::{
     COURSE_PLAN_SYSTEM, EVALUATOR_SYSTEM, FREETEXT_EVALUATION_SYSTEM, LESSON_SYSTEM, QUIZ_SYSTEM,
-    SUMMARY_SYSTEM, TUTOR_SYSTEM, TUTOR_V1_SYSTEM,
+    SUMMARY_SYSTEM, TUTOR_STREAM_V1_SYSTEM, TUTOR_SYSTEM, TUTOR_V1_SYSTEM,
 };
 use super::traits::{ChatProvider, ChatRequest, ChatResponse, EmbeddingProvider};
 use crate::curriculum;
@@ -59,6 +59,8 @@ impl ChatProvider for MockProvider {
             free_text_evaluation_json(user)?
         } else if system == TUTOR_V1_SYSTEM {
             tutor_v1_json(user)?
+        } else if system == TUTOR_STREAM_V1_SYSTEM {
+            tutor_stream_text(user)
         } else if system == TUTOR_SYSTEM {
             tutor_json(user)?
         } else if system == SUMMARY_SYSTEM {
@@ -447,6 +449,66 @@ fn tutor_v1_json(user: &str) -> Result<String, AppError> {
         "diagnosis": diagnosis,
     })
     .to_string())
+}
+
+fn tutor_stream_text(user: &str) -> String {
+    let message = last_learner_message(user);
+    let lowered = message.to_lowercase();
+    let citations = citation_labels(user);
+    let citation_suffix = if citations.is_empty() {
+        String::new()
+    } else {
+        let labels = citations
+            .iter()
+            .map(|label| format!("[{label}]"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("（参考本地资料：{labels}）")
+    };
+    let (body, diagnosis): (String, Option<serde_json::Value>) = if message.is_empty() {
+        (
+            "我在。可以先把你的问题拆成一句你能回答的话，我们从那里开始。".to_owned(),
+            None,
+        )
+    } else if lowered.contains("不懂")
+        || lowered.contains("不会")
+        || lowered.contains("为什么")
+        || lowered.contains("困惑")
+        || lowered.contains("confus")
+    {
+        (
+            "我们换个角度：先不看定义，试着举一个最小的例子，把它代进去算一遍。\
+             如果你愿意，先告诉我你卡在哪一步——是名词不清楚，还是不知道下一步做什么？"
+                .to_owned(),
+            Some(json!({
+                "kind": "Misconception",
+                "knowledgePointIds": [],
+                "confidence": 0.82,
+                "severity": 0.7,
+                "explanation": "学习者主动表示不理解，可能停留在名词层面。",
+            })),
+        )
+    } else if lowered.contains("懂") || lowered.contains("明白") || lowered.contains("continue")
+    {
+        (
+            "很好。接下来完成这道检查题，然后点击「继续学习」点亮下一个知识点。".to_owned(),
+            None,
+        )
+    } else {
+        (
+            "收到。我会根据你的回答继续提问；你也可以随时告诉我哪里还不清楚。".to_owned(),
+            None,
+        )
+    };
+    let mut output = if citation_suffix.is_empty() {
+        body
+    } else {
+        format!("{body} {citation_suffix}")
+    };
+    if let Some(diagnosis) = diagnosis {
+        output.push_str(&format!("\nDIAGNOSIS: {diagnosis}"));
+    }
+    output
 }
 
 fn summary_json(user: &str) -> String {

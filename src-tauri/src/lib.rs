@@ -37,7 +37,7 @@ use ipc::{
         source_delete, source_import_bytes, source_import_files, source_import_url, source_list,
         source_reindex, source_summarize,
     },
-    tutor::tutor_send,
+    tutor::{tutor_send, tutor_send_stream},
 };
 use tauri::Manager;
 
@@ -99,6 +99,7 @@ pub fn run() {
             quiz_list,
             quiz_submit,
             tutor_send,
+            tutor_send_stream,
             learning_start,
             learning_respond,
             learning_finish,

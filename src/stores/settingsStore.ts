@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, errorOf, type Provider } from "@/api";
+import { api, errorOf, type Provider, type ProviderCapabilities } from "@/api";
 
 export interface ProviderDraft {
   id?: string;
@@ -11,6 +11,13 @@ export interface ProviderDraft {
   enabled: boolean;
 }
 
+export interface ProviderProbe {
+  ok: boolean;
+  message: string;
+  protocol?: string | null;
+  capabilities?: ProviderCapabilities | null;
+}
+
 interface SettingsState {
   providers: Provider[];
   searchProvider: string;
@@ -18,7 +25,7 @@ interface SettingsState {
   loading: boolean;
   error: string | null;
   /** Result of the last `provider_test`, keyed by provider id. */
-  probes: Record<string, { ok: boolean; message: string }>;
+  probes: Record<string, ProviderProbe>;
   load: () => Promise<void>;
   save: (draft: ProviderDraft) => Promise<boolean>;
   remove: (id: string) => Promise<void>;

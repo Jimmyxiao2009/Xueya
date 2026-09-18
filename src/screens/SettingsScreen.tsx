@@ -5,7 +5,28 @@ import {
   EMPTY_DRAFT,
   useSettingsStore,
   type ProviderDraft,
+  type ProviderProbe,
 } from "@/stores/settingsStore";
+
+function capabilityLines(capabilities: NonNullable<ProviderProbe["capabilities"]>): string[] {
+  const mark = (value: boolean) => (value ? "✓" : "✗");
+  const lines = [
+    `Chat             ${mark(capabilities.chatCompletions || capabilities.responses)}`,
+    `Streaming        ${mark(capabilities.streaming)}`,
+    `Structured       ${mark(capabilities.structuredOutput)}`,
+  ];
+  if (capabilities.embeddings) {
+    lines.push(
+      capabilities.embeddingDimension
+        ? `Embeddings       ✓ · ${capabilities.embeddingDimension} dimensions`
+        : "Embeddings       ✓ · dimension unknown",
+    );
+  } else {
+    lines.push("Embeddings       ✗");
+  }
+  lines.push(`Protocol         ${capabilities.protocol ?? "unknown"}`);
+  return lines;
+}
 
 interface SettingsScreenProps {
   onBack: () => void;
@@ -147,6 +168,13 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
                   >
                     {probe.ok ? "连接正常" : "连接失败"} · {probe.message}
                   </p>
+                ) : null}
+                {probe?.capabilities ? (
+                  <ul className="mt-2 space-y-0.5 font-mono text-[11px] text-muted">
+                    {capabilityLines(probe.capabilities).map((line) => (
+                      <li key={line}>{line}</li>
+                    ))}
+                  </ul>
                 ) : null}
                 <button
                   type="button"

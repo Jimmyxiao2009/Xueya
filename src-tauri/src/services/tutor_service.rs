@@ -1,7 +1,9 @@
 use crate::ai::prompts::{
-    labeled_evidence, tutor_context_messages, LabeledEvidence, SUMMARY_SYSTEM, SUMMARY_V1, TUTOR_V1,
+    labeled_evidence, tutor_context_messages, tutor_stream_context_messages, LabeledEvidence,
+    SUMMARY_SYSTEM, SUMMARY_V1, TUTOR_STREAM_V1, TUTOR_V1,
 };
 use crate::ai::schemas::parse_json;
+use crate::ai::stream::AiStreamEvent;
 use crate::ai::traits::{ChatMessage, ChatProvider, ChatRequest};
 use crate::db::repo::{
     courses as course_repo, learning as learning_repo, learning_loop as loop_repo,
@@ -12,9 +14,11 @@ use crate::knowledge::hybrid::{HybridHit, HybridRetriever, RetrievalFilter};
 use crate::services::adaptation_service::AdaptationService;
 use crate::state::AppState;
 use crate::util::time::utc_now;
+use futures_util::StreamExt;
 use regex::Regex;
 use serde::Deserialize;
 use std::sync::Arc;
+use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 const RECENT_MESSAGE_WINDOW: usize = 8;
@@ -275,6 +279,230 @@ impl<'a> TutorService<'a> {
         })
     }
 
+    /// Real streaming tutor turn.
+    ///
+    /// The provider stream is consumed incrementally and every delta is sent on
+    /// `events`; after the stream ends the same citation/diagnosis/adaptation
+    /// pipeline as `turn` runs before the terminal metadata events are sent.
+    pub async fn turn_stream(
+        &self,
+        session_id: Uuid,
+        message: &str,
+        events: UnboundedSender<AiStreamEvent>,
+    ) -> Result<TutorTurn, AppError> {
+        let message = message.trim();
+        if message.is_empty() {
+            return Err(AppError::InvalidInput("message cannot be empty".into()));
+        }
+        let session = learning_repo::get_session(&self.state.pool, session_id).await?;
+        if session.status != LearningSessionStatus::Active {
+            return Err(AppError::InvalidInput(
+                "learning session is not active".into(),
+            ));
+        }
+        let node = course_repo::get_node(&self.state.pool, session.node_id).await?;
+        let lesson: Option<crate::ai::schemas::Lesson> = session
+            .summary_json
+            .as_deref()
+            .and_then(|value| parse_json(value).ok());
+
+        loop_repo::insert_message(&self.state.pool, session_id, "user", message, "{}").await?;
+
+        let steps = loop_repo::list_lesson_steps(&self.state.pool, node.id).await?;
+        let plan_summary = if steps.is_empty() {
+            "（尚未生成学习计划）".to_owned()
+        } else {
+            steps
+                .iter()
+                .map(|step| format!("{}. {}", step.ordinal + 1, step.title))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let retrieval_query = format!("{message}\n{}\n{}", node.title, node.objective);
+        let retrieved = HybridRetriever::new(self.state)
+            .retrieve(
+                &retrieval_query,
+                RetrievalFilter::for_route(session.course_id).with_top_k(8),
+            )
+            .await
+            .unwrap_or_default();
+        let evidence_pairs: Vec<(Uuid, Option<String>, String)> = retrieved
+            .iter()
+            .map(|hit| {
+                (
+                    hit.chunk_id,
+                    Some(hit.source_title.clone()),
+                    hit.text.clone(),
+                )
+            })
+            .collect();
+        let labeled = labeled_evidence(&evidence_pairs);
+        let label_map = build_label_map(&labeled, &retrieved);
+
+        let recent = loop_repo::list_messages(&self.state.pool, session_id).await?;
+        let recent_messages: Vec<ChatMessage> = recent
+            .iter()
+            .rev()
+            .take(RECENT_MESSAGE_WINDOW)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|(role, content)| ChatMessage {
+                role: role.clone(),
+                content: content.clone(),
+            })
+            .collect();
+        let summary = load_session_summary(&self.state.pool, session_id).await?;
+        let mastery = learning_repo::get_mastery(&self.state.pool, node.id)
+            .await
+            .map(|state| state.mastery)
+            .unwrap_or(0.0);
+        let learner_context = format!(
+            "Node: {}\nObjective: {}\nLesson explanation:\n{}\n\nLearning plan:\n{}\n\nCurrent mastery: {:.2}",
+            node.title,
+            node.objective,
+            lesson
+                .as_ref()
+                .map(|lesson| lesson.explanation.as_str())
+                .unwrap_or(""),
+            plan_summary,
+            mastery,
+        );
+
+        let (config, chat) = self.state.providers.default_chat_provider().await?;
+        let is_mock = crate::ai::registry::is_mock_config(&config);
+        let messages = tutor_stream_context_messages(
+            &learner_context,
+            summary.as_deref(),
+            &recent_messages,
+            &labeled,
+        );
+
+        let _ = events.send(AiStreamEvent::Started {
+            model: config.chat_model.clone(),
+        });
+        let mut stream = match chat
+            .chat_stream(ChatRequest::new(config.chat_model.clone(), messages))
+            .await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = events.send(AiStreamEvent::Failed {
+                    code: error.code().to_owned(),
+                    message: error.public_message().to_owned(),
+                });
+                return Err(error);
+            }
+        };
+
+        let mut full_text = String::new();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(delta) => {
+                    if !delta.content.is_empty() {
+                        full_text.push_str(&delta.content);
+                        let _ = events.send(AiStreamEvent::Delta {
+                            text: delta.content,
+                        });
+                    }
+                }
+                Err(error) => {
+                    let _ = events.send(AiStreamEvent::Failed {
+                        code: error.code().to_owned(),
+                        message: error.public_message().to_owned(),
+                    });
+                    return Err(error);
+                }
+            }
+        }
+
+        let (message_text, diagnosis) = parse_stream_tutor_reply(&full_text);
+        let reply = TutorReply {
+            message: message_text,
+            citations: Vec::new(),
+            suggested_action: "continue".to_owned(),
+            grounding: None,
+            diagnosis,
+        };
+
+        let citations = resolve_citations(&reply, &label_map);
+        let explicit_source_request = asks_for_sources(message);
+        let grounding = choose_grounding(
+            explicit_source_request,
+            evidence_pairs.is_empty(),
+            &citations,
+            reply.grounding.as_deref(),
+        );
+        let diagnosis_detail = reply.diagnosis.as_ref().map(|diagnosis| {
+            Diagnosis::new(
+                DiagnosisKind::parse(&diagnosis.kind),
+                diagnosis.knowledge_point_ids.clone(),
+                diagnosis.confidence,
+                diagnosis.severity,
+                diagnosis.explanation.clone(),
+            )
+        });
+
+        loop_repo::insert_message(
+            &self.state.pool,
+            session_id,
+            "assistant",
+            &reply.message,
+            &serde_json::json!({
+                "suggestedAction": reply.suggested_action,
+                "grounding": grounding,
+                "citations": citations.iter().map(|citation| citation.chunk_id).collect::<Vec<_>>(),
+                "generatedBy": if is_mock { "mock" } else { "ai" },
+                "streamed": true,
+            })
+            .to_string(),
+        )
+        .await?;
+
+        let mut adaptation = None;
+        let mut inserted_node_id = None;
+        if let Some(diagnosis) = diagnosis_detail.as_ref() {
+            let outcome = AdaptationService::new(self.state)
+                .apply(session.course_id, node.id, diagnosis)
+                .await?;
+            adaptation = outcome.event;
+            inserted_node_id = outcome.inserted_node_id;
+        }
+
+        let _ = self
+            .refresh_session_summary(session_id, &config, chat.as_ref())
+            .await;
+
+        let turn = TutorTurn {
+            message: reply.message,
+            suggested_action: "continue".to_owned(),
+            diagnosis: diagnosis_detail
+                .as_ref()
+                .map(|diagnosis| diagnosis.explanation.clone()),
+            diagnosis_detail,
+            citations,
+            grounding,
+            generated_by: if is_mock { "mock".into() } else { "ai".into() },
+            adaptation,
+            inserted_node_id,
+        };
+
+        let citation_titles: Vec<String> = turn
+            .citations
+            .iter()
+            .map(|citation| citation.source_title.clone())
+            .collect();
+        let _ = events.send(AiStreamEvent::CitationMetadata {
+            citations: citation_titles,
+        });
+        let _ = events.send(AiStreamEvent::Completed {
+            finish_reason: Some("stop".to_owned()),
+        });
+        let _ = TUTOR_STREAM_V1;
+        Ok(turn)
+    }
+
     async fn refresh_session_summary(
         &self,
         session_id: Uuid,
@@ -350,6 +578,24 @@ fn build_label_map(
         );
     }
     map
+}
+
+fn parse_stream_tutor_reply(text: &str) -> (String, Option<TutorDiagnosisSchema>) {
+    let mut visible_lines = Vec::new();
+    let mut diagnosis = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let upper = trimmed.to_ascii_uppercase();
+        if let Some(index) = upper.find("DIAGNOSIS:") {
+            let payload = trimmed[index + "DIAGNOSIS:".len()..].trim();
+            if let Ok(parsed) = serde_json::from_str::<TutorDiagnosisSchema>(payload) {
+                diagnosis = Some(parsed);
+                continue;
+            }
+        }
+        visible_lines.push(line);
+    }
+    (visible_lines.join("\n").trim().to_owned(), diagnosis)
 }
 
 fn resolve_citations(

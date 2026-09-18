@@ -461,7 +461,8 @@ export class FakeBackend {
           adaptation: null,
           insertedNodeId: null,
         };
-      case "tutor_send": {
+      case "tutor_send":
+      case "tutor_send_stream": {
         const session = this.sessions.get(String(input.sessionId));
         const node = session ? this.findNode(session.nodeId) : undefined;
         const confused = /不懂|不会|不明白|困惑|为什么/.test(String(input.message));
