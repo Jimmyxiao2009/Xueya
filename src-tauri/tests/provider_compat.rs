@@ -165,6 +165,12 @@ fn serve_one(
     requests: &Arc<Mutex<Vec<String>>>,
     queue: &Arc<Mutex<VecDeque<MockResponse>>>,
 ) {
+    // `TcpListener::set_nonblocking(true)` can leak the non-blocking flag onto
+    // accepted sockets on some platforms. Force each connection back to
+    // blocking mode before applying the read timeout, otherwise a scheduled
+    // request can look like an immediate `WouldBlock` and be dropped under
+    // parallel test load.
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let request = read_request(&mut stream);
     if request.is_empty() {
