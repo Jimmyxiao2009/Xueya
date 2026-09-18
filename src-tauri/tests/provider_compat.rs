@@ -68,7 +68,11 @@ impl MockServer {
             while !thread_shutdown.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        serve_one(stream, &thread_requests, &thread_queue);
+                        let connection_requests = thread_requests.clone();
+                        let connection_queue = thread_queue.clone();
+                        std::thread::spawn(move || {
+                            serve_one(stream, &connection_requests, &connection_queue);
+                        });
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(3));
@@ -161,54 +165,53 @@ fn serve_one(
     requests: &Arc<Mutex<Vec<String>>>,
     queue: &Arc<Mutex<VecDeque<MockResponse>>>,
 ) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    // Keep the connection alive between requests: the provider probes several
-    // endpoints in a row and a premature close shows up as a transient network
-    // error, which would consume extra scripted responses.
-    loop {
-        let request = read_request(&mut stream);
-        if request.is_empty() {
-            break;
-        }
-        let request_text = String::from_utf8_lossy(&request);
-        let first_line = request_text.lines().next().unwrap_or_default().to_owned();
-        requests.lock().expect("requests lock").push(first_line);
-
-        let response = queue
-            .lock()
-            .expect("queue lock")
-            .pop_front()
-            .unwrap_or_else(|| MockResponse::json(500, r#"{"error":"no scripted response"}"#));
-        let reason = match response.status {
-            200 => "OK",
-            400 => "Bad Request",
-            401 => "Unauthorized",
-            429 => "Too Many Requests",
-            500 => "Internal Server Error",
-            _ => "Mock",
-        };
-        let header = format!(
-            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
-            response.status,
-            reason,
-            response.content_type,
-            response.body.len()
-        );
-        if stream.write_all(header.as_bytes()).is_err() {
-            break;
-        }
-        if stream.write_all(response.body.as_bytes()).is_err() {
-            break;
-        }
-        if stream.flush().is_err() {
-            break;
-        }
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let request = read_request(&mut stream);
+    if request.is_empty() {
+        return;
     }
+    let request_text = String::from_utf8_lossy(&request);
+    let first_line = request_text.lines().next().unwrap_or_default().to_owned();
+    requests.lock().expect("requests lock").push(first_line);
+
+    let response = queue
+        .lock()
+        .expect("queue lock")
+        .pop_front()
+        .unwrap_or_else(|| MockResponse::json(500, r#"{"error":"no scripted response"}"#));
+    let reason = match response.status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        _ => "Mock",
+    };
+    let header = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        response.status,
+        reason,
+        response.content_type,
+        response.body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(response.body.as_bytes());
+    let _ = stream.flush();
 }
 
 fn provider(server: &MockServer, protocol: ProviderProtocol) -> OpenAiCompatibleProvider {
+    // No idle connection reuse: the mock server is intentionally small, and a
+    // stale keep-alive socket under load must not look like a transient
+    // provider network failure.
+    let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        // The developer machine may export HTTP_PROXY/HTTPS_PROXY for real
+        // providers; loopback tests must never be routed through it.
+        .no_proxy()
+        .build()
+        .expect("test http client");
     OpenAiCompatibleProvider::with_protocol(
-        reqwest::Client::new(),
+        client,
         server.base_url(),
         "test-key-not-real",
         "chat-model",
