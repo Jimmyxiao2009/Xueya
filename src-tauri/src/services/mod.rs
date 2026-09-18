@@ -1,3 +1,4 @@
+pub mod adaptation_service;
 pub mod course_service;
 pub mod ingestion_service;
 pub mod knowledge_service;

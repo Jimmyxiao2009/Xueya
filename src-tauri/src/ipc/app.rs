@@ -16,7 +16,13 @@ pub async fn app_get_info(state: State<'_, AppState>) -> Result<AppInfoDto, AppE
 }
 
 async fn app_info(state: &AppState) -> Result<AppInfoDto, AppError> {
-    let provider_count = state.providers.list().await?.len();
+    let provider_count = state
+        .providers
+        .list()
+        .await?
+        .iter()
+        .filter(|provider| provider.id != crate::ai::registry::MOCK_PROVIDER_ID)
+        .count();
     let source_count = source_service::list_sources(&state.pool).await?.len();
     let course_count = CourseService::new(state).list_courses().await?.len();
     Ok(AppInfoDto {

@@ -53,6 +53,80 @@ pub struct Evaluation {
     pub mastery_delta: f64,
     pub follow_up_question: Option<String>,
     pub suggested_action: String,
+    /// Optional free-text fields. They default so older providers and tests
+    /// remain valid.
+    #[serde(default)]
+    pub verdict: Option<String>,
+    #[serde(default)]
+    pub strengths: Vec<String>,
+    #[serde(default)]
+    pub gaps: Vec<String>,
+    #[serde(default)]
+    pub diagnoses: Vec<crate::domain::Diagnosis>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FreeTextEvaluation {
+    pub verdict: String,
+    pub feedback: String,
+    #[serde(default)]
+    pub strengths: Vec<String>,
+    #[serde(default)]
+    pub gaps: Vec<String>,
+    #[serde(default)]
+    pub diagnoses: Vec<crate::domain::Diagnosis>,
+    pub confidence: f64,
+    pub mastery_delta: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuizGeneration {
+    pub questions: Vec<GeneratedQuizQuestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedQuizQuestion {
+    pub kind: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub answers: Vec<String>,
+    #[serde(default)]
+    pub explanation: String,
+    #[serde(default = "half")]
+    pub difficulty: f64,
+}
+
+fn half() -> f64 {
+    0.5
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TutorTurn {
+    pub message: String,
+    #[serde(default)]
+    pub citations: Vec<String>,
+    #[serde(default)]
+    pub suggested_action: String,
+    #[serde(default)]
+    pub grounding: Option<String>,
+    #[serde(default)]
+    pub diagnosis: Option<crate::domain::Diagnosis>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSummary {
+    pub summary: String,
+    #[serde(default)]
+    pub key_points: Vec<String>,
 }
 
 pub fn parse_json<T: DeserializeOwned>(content: &str) -> Result<T, AppError> {
@@ -228,7 +302,123 @@ pub fn sanitize_evaluation(mut evaluation: Evaluation) -> Result<Evaluation, App
     evaluation.correctness = evaluation.correctness.clamp(0.0, 1.0);
     evaluation.mastery_delta = evaluation.mastery_delta.clamp(-0.25, 0.25);
     evaluation.misconceptions.truncate(20);
+    for diagnosis in &mut evaluation.diagnoses {
+        if !diagnosis.confidence.is_finite() || !diagnosis.severity.is_finite() {
+            return Err(AppError::AiResponseInvalid(
+                "evaluation diagnosis has a non-finite confidence or severity".into(),
+            ));
+        }
+        diagnosis.confidence = diagnosis.confidence.clamp(0.0, 1.0);
+        diagnosis.severity = diagnosis.severity.clamp(0.0, 1.0);
+    }
     Ok(evaluation)
+}
+
+pub fn validate_free_text_evaluation(evaluation: &FreeTextEvaluation) -> Result<(), AppError> {
+    if evaluation.feedback.trim().is_empty() {
+        return Err(AppError::AiResponseInvalid(
+            "free-text evaluation feedback is empty".into(),
+        ));
+    }
+    if !evaluation.confidence.is_finite() || !evaluation.mastery_delta.is_finite() {
+        return Err(AppError::AiResponseInvalid(
+            "free-text evaluation has non-finite numbers".into(),
+        ));
+    }
+    match evaluation.verdict.trim().to_ascii_lowercase().as_str() {
+        "correct" | "partial" | "incorrect" | "uncertain" => {}
+        other => {
+            return Err(AppError::AiResponseInvalid(format!(
+                "unknown free-text verdict: {other}"
+            )))
+        }
+    }
+    for diagnosis in &evaluation.diagnoses {
+        if !diagnosis.confidence.is_finite() || !diagnosis.severity.is_finite() {
+            return Err(AppError::AiResponseInvalid(
+                "diagnosis has a non-finite confidence or severity".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_quiz_generation(generation: &QuizGeneration) -> Result<(), AppError> {
+    if generation.questions.is_empty() {
+        return Err(AppError::AiResponseInvalid(
+            "quiz generation produced no questions".into(),
+        ));
+    }
+    for (index, question) in generation.questions.iter().enumerate() {
+        if question.prompt.trim().is_empty() {
+            return Err(AppError::AiResponseInvalid(format!(
+                "quiz question {index} has an empty prompt"
+            )));
+        }
+        match question.kind.as_str() {
+            "single" => {
+                if question.options.is_empty() {
+                    return Err(AppError::AiResponseInvalid(format!(
+                        "single-choice question {index} has no options"
+                    )));
+                }
+                if question.answers.len() != 1 {
+                    return Err(AppError::AiResponseInvalid(format!(
+                        "single-choice question {index} must have exactly one answer"
+                    )));
+                }
+                if !option_contains(&question.options, &question.answers[0]) {
+                    return Err(AppError::AiResponseInvalid(format!(
+                        "single-choice question {index} answer is not one of its options"
+                    )));
+                }
+            }
+            "multi" => {
+                if question.options.is_empty() {
+                    return Err(AppError::AiResponseInvalid(format!(
+                        "multi-choice question {index} has no options"
+                    )));
+                }
+                if question.answers.is_empty() {
+                    return Err(AppError::AiResponseInvalid(format!(
+                        "multi-choice question {index} must have at least one answer"
+                    )));
+                }
+                for answer in &question.answers {
+                    if !option_contains(&question.options, answer) {
+                        return Err(AppError::AiResponseInvalid(format!(
+                            "multi-choice question {index} answer is not one of its options"
+                        )));
+                    }
+                }
+            }
+            "fill" => {
+                if question.answers.is_empty() {
+                    return Err(AppError::AiResponseInvalid(format!(
+                        "fill question {index} must have at least one acceptable answer"
+                    )));
+                }
+            }
+            "short" => {}
+            other => {
+                return Err(AppError::AiResponseInvalid(format!(
+                    "unsupported generated quiz kind: {other}"
+                )))
+            }
+        }
+        if !question.difficulty.is_finite() {
+            return Err(AppError::AiResponseInvalid(format!(
+                "quiz question {index} difficulty is not finite"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn option_contains(options: &[String], answer: &str) -> bool {
+    options
+        .iter()
+        .any(|option| option == answer || option.trim() == answer.trim())
 }
 
 #[cfg(test)]

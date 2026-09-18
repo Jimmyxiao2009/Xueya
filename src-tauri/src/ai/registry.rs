@@ -1,14 +1,15 @@
+use super::capabilities::ProviderCapabilities;
+use super::endpoint::normalize_base_url;
 use super::mock::{MockProvider, MOCK_MODEL};
 use super::openai_compatible::OpenAiCompatibleProvider;
 use super::traits::{ChatProvider, EmbeddingProvider};
 use crate::db::repo::providers as provider_repo;
-use crate::domain::ProviderConfig;
+use crate::domain::{ProviderConfig, ProviderProtocol};
 use crate::error::AppError;
 use crate::secrets::keyring_store::SecretStore;
 use crate::util::time::utc_now;
 use sqlx::SqlitePool;
 use std::sync::Arc;
-use url::Url;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -19,6 +20,7 @@ pub struct ProviderUpsert {
     pub chat_model: String,
     pub embedding_model: String,
     pub api_key: Option<String>,
+    pub protocol: ProviderProtocol,
     pub enabled: bool,
 }
 
@@ -53,6 +55,35 @@ impl ProviderRegistry {
         }
     }
 
+    pub async fn api_key_hint(
+        &self,
+        provider: &ProviderConfig,
+    ) -> Result<Option<String>, AppError> {
+        let reference = match provider.api_key_ref.as_deref() {
+            Some(reference) => reference,
+            None => return Ok(None),
+        };
+        let key = match self.secrets.get_secret(reference).await {
+            Ok(key) => key,
+            Err(AppError::NotFound(_)) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let chars: Vec<char> = key.chars().collect();
+        if chars.len() <= 8 {
+            return Ok(Some("configured".to_owned()));
+        }
+        let prefix: String = chars.iter().take(3).collect();
+        let suffix: String = chars
+            .iter()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        Ok(Some(format!("{prefix}…{suffix}")))
+    }
+
     pub async fn upsert(&self, input: ProviderUpsert) -> Result<ProviderConfig, AppError> {
         validate_provider_input(&input)?;
         let now = utc_now();
@@ -79,10 +110,11 @@ impl ProviderRegistry {
         let provider = ProviderConfig {
             id,
             display_name: input.display_name.trim().to_owned(),
-            base_url: input.base_url.trim().trim_end_matches('/').to_owned(),
+            base_url: normalize_base_url(&input.base_url)?,
             chat_model: input.chat_model.trim().to_owned(),
             embedding_model: input.embedding_model.trim().to_owned(),
             api_key_ref,
+            protocol: input.protocol,
             enabled: input.enabled,
             created_at: existing
                 .as_ref()
@@ -91,6 +123,7 @@ impl ProviderRegistry {
             updated_at: now,
         };
         provider_repo::upsert_provider(&self.pool, &provider).await?;
+        self.clear_capability_cache(id).await?;
         Ok(provider)
     }
 
@@ -99,6 +132,7 @@ impl ProviderRegistry {
         if let Some(reference) = provider.api_key_ref {
             self.secrets.delete_secret(&reference).await?;
         }
+        self.clear_capability_cache(id).await?;
         provider_repo::delete_provider(&self.pool, id).await
     }
 
@@ -107,12 +141,14 @@ impl ProviderRegistry {
         provider: &ProviderConfig,
     ) -> Result<Arc<dyn ChatProvider>, AppError> {
         let key = self.api_key(provider).await?;
-        Ok(Arc::new(OpenAiCompatibleProvider::new(
+        let protocol = self.effective_protocol(provider).await?;
+        Ok(Arc::new(OpenAiCompatibleProvider::with_protocol(
             self.http.clone(),
             provider.base_url.clone(),
             key,
             provider.chat_model.clone(),
             provider.embedding_model.clone(),
+            protocol,
         )))
     }
 
@@ -121,25 +157,79 @@ impl ProviderRegistry {
         provider: &ProviderConfig,
     ) -> Result<Arc<dyn EmbeddingProvider>, AppError> {
         let key = self.api_key(provider).await?;
-        Ok(Arc::new(OpenAiCompatibleProvider::new(
+        Ok(Arc::new(OpenAiCompatibleProvider::with_protocol(
             self.http.clone(),
             provider.base_url.clone(),
             key,
             provider.chat_model.clone(),
             provider.embedding_model.clone(),
+            ProviderProtocol::ChatCompletions,
         )))
     }
 
-    /// The provider used for real work.
-    ///
-    /// Falls back to [`MockProvider`] when nothing is configured or the stored
-    /// key is missing, so that a fresh install is a *working* install. The
-    /// caller can tell the two apart with [`is_mock_config`].
+    pub async fn effective_protocol(
+        &self,
+        provider: &ProviderConfig,
+    ) -> Result<ProviderProtocol, AppError> {
+        if provider.protocol != ProviderProtocol::Auto {
+            return Ok(provider.protocol);
+        }
+        let capabilities = self.capabilities(provider).await?;
+        Ok(capabilities.preferred_protocol())
+    }
+
+    pub async fn capabilities(
+        &self,
+        provider: &ProviderConfig,
+    ) -> Result<ProviderCapabilities, AppError> {
+        if let Some(cached) = self.load_capability_cache(provider.id).await? {
+            return Ok(cached);
+        }
+        let key = match self.api_key(provider).await {
+            Ok(key) => key,
+            Err(AppError::ProviderAuth) => {
+                return Ok(ProviderCapabilities {
+                    probe_errors: vec!["Unauthorized: API key is missing".to_owned()],
+                    ..ProviderCapabilities::default()
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let client = OpenAiCompatibleProvider::with_protocol(
+            self.http.clone(),
+            provider.base_url.clone(),
+            key,
+            provider.chat_model.clone(),
+            provider.embedding_model.clone(),
+            provider.protocol,
+        );
+        let capabilities = client.probe_capabilities().await;
+        self.save_capability_cache(provider.id, &capabilities)
+            .await?;
+        Ok(capabilities)
+    }
+
+    pub async fn probe_and_cache(&self, id: Uuid) -> Result<ProviderCapabilities, AppError> {
+        let provider = provider_repo::get_provider(&self.pool, id).await?;
+        self.clear_capability_cache(id).await?;
+        self.capabilities(&provider).await
+    }
+
+    /// The offline provider is a real backend provider, not a frontend fake.
+    /// It is persisted so foreign keys such as `embeddings.provider_id` are
+    /// satisfied, but it is hidden from the user-managed provider list.
+    async fn ensure_mock_provider(&self) -> Result<(), AppError> {
+        provider_repo::upsert_provider(&self.pool, &mock_config()).await
+    }
+
     pub async fn default_chat_provider(
         &self,
     ) -> Result<(ProviderConfig, Arc<dyn ChatProvider>), AppError> {
         match provider_repo::first_enabled_provider(&self.pool).await? {
-            None => Ok((mock_config(), Arc::new(MockProvider::new()))),
+            None => {
+                self.ensure_mock_provider().await?;
+                Ok((mock_config(), Arc::new(MockProvider::new())))
+            }
             Some(provider) => match self.chat_provider(&provider).await {
                 Ok(chat) => Ok((provider, chat)),
                 Err(AppError::ProviderAuth) => {
@@ -147,6 +237,7 @@ impl ProviderRegistry {
                         provider = %provider.id,
                         "provider has no usable API key; using the offline mock provider"
                     );
+                    self.ensure_mock_provider().await?;
                     Ok((mock_config(), Arc::new(MockProvider::new())))
                 }
                 Err(error) => Err(error),
@@ -158,16 +249,21 @@ impl ProviderRegistry {
         &self,
     ) -> Result<(ProviderConfig, Arc<dyn EmbeddingProvider>), AppError> {
         match provider_repo::first_enabled_provider(&self.pool).await? {
-            None => Ok((mock_config(), Arc::new(MockProvider::new()))),
+            None => {
+                self.ensure_mock_provider().await?;
+                Ok((mock_config(), Arc::new(MockProvider::new())))
+            }
             Some(provider) => match self.embedding_provider(&provider).await {
                 Ok(embedding) => Ok((provider, embedding)),
-                Err(AppError::ProviderAuth) => Ok((mock_config(), Arc::new(MockProvider::new()))),
+                Err(AppError::ProviderAuth) => {
+                    self.ensure_mock_provider().await?;
+                    Ok((mock_config(), Arc::new(MockProvider::new())))
+                }
                 Err(error) => Err(error),
             },
         }
     }
 
-    /// True when the returned config is the offline stand-in.
     pub async fn is_mock_active(&self) -> Result<bool, AppError> {
         let provider = provider_repo::first_enabled_provider(&self.pool).await?;
         match provider {
@@ -189,6 +285,52 @@ impl ProviderRegistry {
                 other => other,
             })
     }
+
+    async fn load_capability_cache(
+        &self,
+        provider_id: Uuid,
+    ) -> Result<Option<ProviderCapabilities>, AppError> {
+        let value: Option<String> = sqlx::query_scalar(
+            "SELECT capabilities_json FROM provider_capability_cache WHERE provider_id = ?",
+        )
+        .bind(provider_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(value.and_then(|value| serde_json::from_str(&value).ok()))
+    }
+
+    async fn save_capability_cache(
+        &self,
+        provider_id: Uuid,
+        capabilities: &ProviderCapabilities,
+    ) -> Result<(), AppError> {
+        let json = serde_json::to_string(capabilities)
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        let protocol = capabilities
+            .protocol
+            .unwrap_or(ProviderProtocol::ChatCompletions)
+            .as_str();
+        sqlx::query(
+            "INSERT INTO provider_capability_cache (provider_id, capabilities_json, protocol, probed_at) \
+             VALUES (?, ?, ?, ?) ON CONFLICT(provider_id) DO UPDATE SET \
+             capabilities_json = excluded.capabilities_json, protocol = excluded.protocol, probed_at = excluded.probed_at",
+        )
+        .bind(provider_id)
+        .bind(json)
+        .bind(protocol)
+        .bind(utc_now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn clear_capability_cache(&self, provider_id: Uuid) -> Result<(), AppError> {
+        sqlx::query("DELETE FROM provider_capability_cache WHERE provider_id = ?")
+            .bind(provider_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 fn validate_provider_input(input: &ProviderUpsert) -> Result<(), AppError> {
@@ -197,13 +339,7 @@ fn validate_provider_input(input: &ProviderUpsert) -> Result<(), AppError> {
             "provider display name is required".into(),
         ));
     }
-    let url = Url::parse(input.base_url.trim())
-        .map_err(|error| AppError::InvalidInput(format!("invalid provider base URL: {error}")))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(AppError::InvalidInput(
-            "provider base URL must use http or https".into(),
-        ));
-    }
+    normalize_base_url(&input.base_url)?;
     if input.chat_model.trim().is_empty() {
         return Err(AppError::InvalidInput("chat model is required".into()));
     }
@@ -213,17 +349,18 @@ fn validate_provider_input(input: &ProviderUpsert) -> Result<(), AppError> {
     Ok(())
 }
 
-/// A synthetic provider record for the offline stand-in. Nothing is ever sent
-/// to `baseUrl`; the scheme makes that obvious in logs and in the UI.
+pub const MOCK_PROVIDER_ID: Uuid = Uuid::from_u128(0x7665_7272_7563_6b74_0000_0000_0000_0001);
+
 pub fn mock_config() -> ProviderConfig {
     let now = utc_now();
     ProviderConfig {
-        id: Uuid::nil(),
+        id: MOCK_PROVIDER_ID,
         display_name: "Offline Mock".to_owned(),
         base_url: "mock://local".to_owned(),
         chat_model: MOCK_MODEL.to_owned(),
         embedding_model: MOCK_MODEL.to_owned(),
         api_key_ref: None,
+        protocol: ProviderProtocol::ChatCompletions,
         enabled: true,
         created_at: now,
         updated_at: now,

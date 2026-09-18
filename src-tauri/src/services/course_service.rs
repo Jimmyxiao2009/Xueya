@@ -1,5 +1,10 @@
-use crate::ai::prompts::course_plan_messages;
-use crate::ai::schemas::{parse_json, validate_course_plan, CoursePlan, Lesson};
+use crate::ai::prompts::{
+    course_plan_messages, labeled_evidence, quiz_generation_messages, LabeledEvidence, QUIZ_V1,
+};
+use crate::ai::schemas::{
+    parse_json, validate_course_plan, validate_quiz_generation, CoursePlan, Lesson, QuizGeneration,
+};
+use crate::ai::structured::generate_structured;
 use crate::ai::traits::ChatRequest;
 use crate::curriculum::{self, PlannedRoute, RouteBrief};
 use crate::db::repo::{
@@ -207,15 +212,56 @@ impl<'a> CourseService<'a> {
         let snippets = KnowledgeService::evidence_snippets(evidence);
         let (provider_config, chat_provider) = self.state.providers.default_chat_provider().await?;
         let messages = course_plan_messages(topic, &snippets)?;
-        let response = chat_provider
-            .chat(ChatRequest::json(
-                provider_config.chat_model.clone(),
-                messages,
-            ))
-            .await?;
-        let plan: CoursePlan = parse_json(&response.content)?;
-        validate_course_plan(&plan, &known_chunk_ids)?;
+        let known = known_chunk_ids.clone();
+        let plan = generate_structured::<CoursePlan, _>(
+            chat_provider.as_ref(),
+            &provider_config.chat_model,
+            messages,
+            move |plan| validate_course_plan(plan, &known),
+        )
+        .await?;
         Ok(planned_route_from_ai(plan))
+    }
+
+    /// Ask the provider for quiz questions grounded in the same evidence that
+    /// produced the roadmap. A failure here is not fatal: the deterministic
+    /// template quiz is still available, and the caller decides whether to use
+    /// it. Business validation rejects empty/unsupported questions and a single
+    /// repair retry is performed by `generate_structured`.
+    async fn plan_quiz_with_ai(
+        &self,
+        node_title: &str,
+        node_objective: &str,
+        concepts: &[String],
+        evidence: &[crate::knowledge::retrieval::RetrievedChunk],
+    ) -> Result<Vec<curriculum::PlannedQuestion>, AppError> {
+        let (config, chat) = self.state.providers.default_chat_provider().await?;
+        let pairs: Vec<(Uuid, Option<String>, String)> = evidence
+            .iter()
+            .map(|item| (item.chunk.id, None, item.chunk.text.clone()))
+            .collect();
+        let labeled: Vec<LabeledEvidence> = labeled_evidence(&pairs);
+        let messages = quiz_generation_messages(node_title, node_objective, concepts, &labeled);
+        let generation = generate_structured::<QuizGeneration, _>(
+            chat.as_ref(),
+            &config.chat_model,
+            messages,
+            validate_quiz_generation,
+        )
+        .await?;
+        let _ = QUIZ_V1;
+        Ok(generation
+            .questions
+            .into_iter()
+            .map(|question| curriculum::PlannedQuestion {
+                kind: crate::domain::QuizKind::parse(&question.kind),
+                prompt: question.prompt,
+                options: question.options,
+                answer: question.answers,
+                explanation: question.explanation,
+                difficulty: question.difficulty.clamp(0.0, 1.0),
+            })
+            .collect())
     }
 
     async fn save_route(
@@ -351,14 +397,34 @@ impl<'a> CourseService<'a> {
                 ));
             }
 
-            for (ordinal, planned_question) in curriculum::plan_quiz(
-                &planned_node.title,
-                &planned_node.objective,
-                &planned_node.concepts,
-            )
-            .into_iter()
-            .enumerate()
-            {
+            let ai_quiz = if origin == "ai" {
+                match self
+                    .plan_quiz_with_ai(
+                        &planned_node.title,
+                        &planned_node.objective,
+                        &planned_node.concepts,
+                        evidence,
+                    )
+                    .await
+                {
+                    Ok(questions) if !questions.is_empty() => Some(questions),
+                    Ok(_) => None,
+                    Err(error) => {
+                        tracing::warn!(%error, node = %planned_node.title, "AI quiz generation failed; using the deterministic quiz");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let planned_questions = ai_quiz.unwrap_or_else(|| {
+                curriculum::plan_quiz(
+                    &planned_node.title,
+                    &planned_node.objective,
+                    &planned_node.concepts,
+                )
+            });
+            for (ordinal, planned_question) in planned_questions.into_iter().enumerate() {
                 questions.push(QuizQuestion {
                     id: Uuid::new_v4(),
                     node_id,

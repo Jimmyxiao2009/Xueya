@@ -4,10 +4,9 @@ use crate::ai::traits::ChatRequest;
 use crate::db::repo::{courses as course_repo, learning_loop as loop_repo};
 use crate::domain::{
     blend_confidence, blend_mastery, grade_locally, schedule_next_review, AdaptationEvent,
-    AdaptationKind, LearnerState, QuizAttempt, QuizGrade, QuizQuestion,
+    LearnerState, QuizAttempt, QuizGrade, QuizQuestion,
 };
 use crate::error::AppError;
-use crate::services::course_service::CourseService;
 use crate::services::knowledge_service::KnowledgeService;
 use crate::state::AppState;
 use crate::util::time::utc_now;
@@ -137,43 +136,29 @@ impl<'a> QuizService<'a> {
         )
         .await?;
 
-        // ---- adaptation ----------------------------------------------------
+        // ---- unified adaptation ------------------------------------------
+        // Every roadmap mutation goes through AdaptationService. The quiz path
+        // normalises a wrong answer into a Diagnosis; it does not insert nodes
+        // directly.
         let mut adaptation = None;
         let mut inserted_node_id = None;
         if !grade.correct {
-            let event = AdaptationEvent::new(
-                course.id,
-                Some(node.id),
-                AdaptationKind::MisconceptionDetected,
+            let diagnosis = crate::domain::Diagnosis::new(
+                crate::domain::DiagnosisKind::IncorrectAnswer,
+                point_id.into_iter().collect(),
+                0.9,
+                (1.0 - grade.score).clamp(0.0, 1.0),
                 if grade.misconceptions.is_empty() {
                     format!("「{}」的检查题未通过", node.title)
                 } else {
                     grade.misconceptions[0].clone()
                 },
-                serde_json::json!({
-                    "questionId": question.id,
-                    "score": grade.score,
-                    "answer": answers,
-                }),
             );
-            loop_repo::insert_adaptation(&self.state.pool, &event).await?;
-            adaptation = Some(event);
-
-            // Insert at most one targeted practice node per source node.
-            let title = crate::domain::adaptation::review_node_title(&node.title);
-            if !course_repo::node_exists_for_title(&self.state.pool, course.id, &title).await? {
-                let review = CourseService::new(self.state)
-                    .insert_review_node(
-                        course.id,
-                        node.id,
-                        &title,
-                        &crate::domain::adaptation::review_node_objective(&grade.misconceptions),
-                        "检查题未通过，插入针对性加练",
-                        point_id,
-                    )
-                    .await?;
-                inserted_node_id = Some(review.id);
-            }
+            let outcome = crate::services::adaptation_service::AdaptationService::new(self.state)
+                .apply(course.id, node.id, &diagnosis)
+                .await?;
+            adaptation = outcome.event;
+            inserted_node_id = outcome.inserted_node_id;
         }
 
         Ok(QuizOutcome {
@@ -245,6 +230,11 @@ impl<'a> QuizService<'a> {
                     mastery_delta: 0.0,
                     follow_up_question: None,
                     suggested_action: "continue".to_owned(),
+                    verdict: None,
+                    strengths: Vec::new(),
+                    gaps: Vec::new(),
+                    diagnoses: Vec::new(),
+                    confidence: None,
                 }
             }
         };

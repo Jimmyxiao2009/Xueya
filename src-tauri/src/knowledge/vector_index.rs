@@ -5,7 +5,7 @@ use crate::ai::embedding::cosine_similarity;
 use crate::error::AppError;
 use async_trait::async_trait;
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -34,6 +34,39 @@ pub trait VectorIndex: Send + Sync {
         model: &str,
         limit: usize,
     ) -> Result<Vec<VectorSearchResult>, AppError>;
+
+    /// Search only a pre-filtered set of chunks.
+    ///
+    /// The default implementation is correct but intentionally conservative;
+    /// `SqliteVectorIndex` overrides it so route filters shrink the scan before
+    /// cosine similarity is computed.
+    async fn search_filtered(
+        &self,
+        query: &[f32],
+        provider_id: Uuid,
+        model: &str,
+        allowed_chunk_ids: Option<&HashSet<Uuid>>,
+        limit: usize,
+    ) -> Result<Vec<VectorSearchResult>, AppError> {
+        let hits = self
+            .search(
+                query,
+                provider_id,
+                model,
+                limit.saturating_mul(4).max(limit),
+            )
+            .await?;
+        Ok(hits
+            .into_iter()
+            .filter(|hit| {
+                allowed_chunk_ids
+                    .map(|allowed| allowed.contains(&hit.chunk_id))
+                    .unwrap_or(true)
+            })
+            .take(limit)
+            .collect())
+    }
+
     async fn rebuild(&self) -> Result<(), AppError>;
 }
 
@@ -113,6 +146,58 @@ impl VectorIndex for SqliteVectorIndex {
                     query.len(),
                     record.vector.len()
                 )));
+            }
+            if let Some(score) = cosine_similarity(query, &record.vector) {
+                matches.push(VectorSearchResult {
+                    chunk_id: record.chunk_id,
+                    score,
+                });
+            }
+        }
+        matches.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        matches.truncate(limit.clamp(1, 100));
+        Ok(matches)
+    }
+
+    async fn search_filtered(
+        &self,
+        query: &[f32],
+        provider_id: Uuid,
+        model: &str,
+        allowed_chunk_ids: Option<&HashSet<Uuid>>,
+        limit: usize,
+    ) -> Result<Vec<VectorSearchResult>, AppError> {
+        if query.is_empty() {
+            return Err(AppError::Embedding("query embedding is empty".into()));
+        }
+        self.ensure_loaded().await?;
+        let cache = self.cache.read().await;
+        let mut matches = Vec::new();
+        for record in cache.values() {
+            if record.provider_id != provider_id || record.model != model {
+                continue;
+            }
+            if let Some(allowed) = allowed_chunk_ids {
+                if !allowed.contains(&record.chunk_id) {
+                    continue;
+                }
+            }
+            if record.dimensions != query.len() as i64 || record.vector.len() != query.len() {
+                // A stale vector from a previous embedding model/dimension is
+                // never mixed with the current query. The source is flagged
+                // needs_reindex separately; here we simply exclude it.
+                tracing::warn!(
+                    chunk_id = %record.chunk_id,
+                    expected = query.len(),
+                    found = record.vector.len(),
+                    "skipping stale embedding with mismatched dimension"
+                );
+                continue;
             }
             if let Some(score) = cosine_similarity(query, &record.vector) {
                 matches.push(VectorSearchResult {

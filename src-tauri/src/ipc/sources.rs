@@ -1,4 +1,6 @@
-use super::dto::{ImportBytesInput, ImportFilesInput, ImportUrlInput, JobDto, SourceDto};
+use super::dto::{
+    ImportBytesInput, ImportFilesInput, ImportUrlInput, JobDto, SourceDto, SourceSummaryDto,
+};
 use crate::domain::SourceKind;
 use crate::error::AppError;
 use crate::services::ingestion_service::{IngestInput, IngestionService};
@@ -12,6 +14,20 @@ use uuid::Uuid;
 pub async fn source_list(state: State<'_, AppState>) -> Result<Vec<SourceDto>, AppError> {
     let sources = source_service::list_sources(&state.pool).await?;
     Ok(sources.iter().map(SourceDto::from).collect())
+}
+
+#[tauri::command]
+pub async fn source_summarize(
+    state: State<'_, AppState>,
+    id: Uuid,
+) -> Result<SourceSummaryDto, AppError> {
+    let result = source_service::summarize_source(&state, id).await?;
+    Ok(SourceSummaryDto {
+        source_id: id,
+        summary: result.summary,
+        key_points: result.key_points,
+        cached: result.cached,
+    })
 }
 
 #[tauri::command]

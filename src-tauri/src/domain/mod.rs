@@ -1,5 +1,6 @@
 pub mod adaptation;
 pub mod course;
+pub mod diagnosis;
 pub mod document;
 pub mod ids;
 pub mod job;
@@ -16,6 +17,7 @@ pub use course::{
     Course, CourseNode, CourseNodeDependency, CourseNodeStatus, CourseStatus, NodeKind,
     RouteProgress,
 };
+pub use diagnosis::{AdaptationDecision, AdaptationPolicy, Diagnosis, DiagnosisKind};
 pub use document::{Chunk, Document};
 pub use ids::*;
 pub use job::{Job, JobStatus};
@@ -26,6 +28,6 @@ pub use learner::{
 };
 pub use learning::{LearningAttempt, LearningSession, LearningSessionStatus, MasteryState};
 pub use plan::{LessonPhase, LessonStep, LessonStepKind};
-pub use provider::ProviderConfig;
+pub use provider::{ProviderConfig, ProviderProtocol};
 pub use quiz::{grade_locally, QuizAttempt, QuizGrade, QuizKind, QuizQuestion};
 pub use source::{Source, SourceKind, SourceRevision, SourceStatus};

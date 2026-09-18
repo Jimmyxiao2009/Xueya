@@ -9,7 +9,10 @@
 //! It is deliberately *not* presented as a real model: every artefact it
 //! produces is tagged `generatedBy = "mock"` and the UI says so.
 
-use super::prompts::{COURSE_PLAN_SYSTEM, EVALUATOR_SYSTEM, LESSON_SYSTEM, TUTOR_SYSTEM};
+use super::prompts::{
+    COURSE_PLAN_SYSTEM, EVALUATOR_SYSTEM, FREETEXT_EVALUATION_SYSTEM, LESSON_SYSTEM, QUIZ_SYSTEM,
+    SUMMARY_SYSTEM, TUTOR_SYSTEM, TUTOR_V1_SYSTEM,
+};
 use super::traits::{ChatProvider, ChatRequest, ChatResponse, EmbeddingProvider};
 use crate::curriculum;
 use crate::error::AppError;
@@ -52,8 +55,16 @@ impl ChatProvider for MockProvider {
             lesson_json(user)?
         } else if system == EVALUATOR_SYSTEM {
             evaluation_json(user)?
+        } else if system == FREETEXT_EVALUATION_SYSTEM {
+            free_text_evaluation_json(user)?
+        } else if system == TUTOR_V1_SYSTEM {
+            tutor_v1_json(user)?
         } else if system == TUTOR_SYSTEM {
             tutor_json(user)?
+        } else if system == SUMMARY_SYSTEM {
+            summary_json(user)
+        } else if system == QUIZ_SYSTEM {
+            quiz_json(user)?
         } else {
             json!({
                 "message": "这是离线 Mock Provider 的回答。配置真实 AI Provider 后会替换为模型输出。",
@@ -312,6 +323,192 @@ fn tutor_json(user: &str) -> Result<String, AppError> {
         "diagnosis": diagnosis,
     })
     .to_string())
+}
+
+fn free_text_evaluation_json(user: &str) -> Result<String, AppError> {
+    let explanation = user
+        .split("Lesson explanation:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\nDiagnostic question:").next())
+        .unwrap_or("");
+    let answer = user
+        .split("Learner answer:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .unwrap_or("")
+        .trim();
+    let correctness = overlap_score(explanation, answer);
+    let verdict = if correctness >= 0.7 {
+        "correct"
+    } else if correctness >= 0.4 {
+        "partial"
+    } else {
+        "incorrect"
+    };
+    let diagnoses = if verdict == "incorrect" {
+        vec![json!({
+            "kind": "IncorrectAnswer",
+            "knowledgePointIds": [],
+            "confidence": 0.82,
+            "severity": 0.85,
+            "explanation": "回答没有命中本课的核心概念。",
+        })]
+    } else if verdict == "partial" {
+        vec![json!({
+            "kind": "PartialUnderstanding",
+            "knowledgePointIds": [],
+            "confidence": 0.72,
+            "severity": 0.6,
+            "explanation": "方向基本正确，但还缺少一个关键环节。",
+        })]
+    } else {
+        Vec::new()
+    };
+    let feedback = if verdict == "correct" {
+        "抓住了主要概念。再补一个具体例子，把结论说完整。"
+    } else if verdict == "partial" {
+        "方向是对的，但还缺关键一环。回看上面的解释，用自己的话再讲一遍。"
+    } else {
+        "这次没有命中要点。已为你在路线中插入一个加练节点，我们换一种方式再过一遍。"
+    };
+    Ok(json!({
+        "verdict": verdict,
+        "feedback": feedback,
+        "strengths": if correctness >= 0.4 {
+            vec!["使用了课程中的部分关键词".to_owned()]
+        } else {
+            Vec::<String>::new()
+        },
+        "gaps": if correctness >= 0.7 {
+            Vec::<String>::new()
+        } else {
+            vec!["核心概念之间的因果关系还不够清楚".to_owned()]
+        },
+        "diagnoses": diagnoses,
+        "confidence": 0.8,
+        "masteryDelta": ((correctness - 0.5) * 0.5).clamp(-0.25, 0.25),
+    })
+    .to_string())
+}
+
+fn tutor_v1_json(user: &str) -> Result<String, AppError> {
+    let message = last_learner_message(user);
+    let lowered = message.to_lowercase();
+    let citations = citation_labels(user);
+    let (reply, action, diagnosis): (&str, &str, Option<serde_json::Value>) = if message.is_empty()
+    {
+        (
+            "我在。可以先把你的问题拆成一句你能回答的话，我们从那里开始。",
+            "ask",
+            None,
+        )
+    } else if lowered.contains("不懂")
+        || lowered.contains("不会")
+        || lowered.contains("为什么")
+        || lowered.contains("困惑")
+        || lowered.contains("confus")
+    {
+        (
+            "我们换个角度：先不看定义，试着举一个最小的例子，把它代进去算一遍。\
+             如果你愿意，先告诉我你卡在哪一步——是名词不清楚，还是不知道下一步做什么？",
+            "explain",
+            Some(json!({
+                "kind": "Misconception",
+                "knowledgePointIds": [],
+                "confidence": 0.82,
+                "severity": 0.7,
+                "explanation": "学习者主动表示不理解，可能停留在名词层面。",
+            })),
+        )
+    } else if lowered.contains("懂") || lowered.contains("明白") || lowered.contains("continue")
+    {
+        (
+            "很好。接下来完成这道检查题，然后点击「继续学习」点亮下一个知识点。",
+            "quiz",
+            None,
+        )
+    } else {
+        (
+            "收到。我会根据你的回答继续提问；你也可以随时告诉我哪里还不清楚。",
+            "continue",
+            None,
+        )
+    };
+    let grounding = if citations.is_empty() {
+        "model_knowledge"
+    } else {
+        "source_grounded"
+    };
+    Ok(json!({
+        "message": reply,
+        "citations": citations,
+        "suggestedAction": action,
+        "grounding": grounding,
+        "diagnosis": diagnosis,
+    })
+    .to_string())
+}
+
+fn summary_json(user: &str) -> String {
+    let preview: String = user.chars().take(400).collect();
+    format!(
+        "- 已完成本段对话的离线摘要\n- 学习者仍在围绕当前知识点练习\n- 摘要预览：{}",
+        preview.replace('\n', " ")
+    )
+}
+
+fn quiz_json(user: &str) -> Result<String, AppError> {
+    let title = section(user, "Node title: ")
+        .or_else(|| section(user, "Node: "))
+        .unwrap_or("当前知识点");
+    let concept = section(user, "Knowledge point: ").unwrap_or(title);
+    Ok(json!({
+        "questions": [
+            {
+                "kind": "single",
+                "prompt": format!("关于「{concept}」，下面哪一句最准确？"),
+                "options": [
+                    format!("{concept} 是本节的核心概念"),
+                    "它与本节内容无关",
+                    "它只用于记忆，不需要理解"
+                ],
+                "answers": [format!("{concept} 是本节的核心概念")],
+                "explanation": format!("{concept} 是当前学习节点要掌握的内容。"),
+                "difficulty": 0.35
+            },
+            {
+                "kind": "fill",
+                "prompt": format!("用一个词概括本节的核心：{concept}"),
+                "options": [],
+                "answers": [concept],
+                "explanation": "填写本节的核心概念即可。",
+                "difficulty": 0.3
+            }
+        ]
+    })
+    .to_string())
+}
+
+fn last_learner_message(user: &str) -> &str {
+    user.rsplit("\nuser:")
+        .next()
+        .and_then(|rest| rest.lines().next())
+        .map(str::trim)
+        .unwrap_or_else(|| user.trim())
+}
+
+fn citation_labels(user: &str) -> Vec<String> {
+    let Ok(regex) = regex::Regex::new(r"\[C(\d+)\]") else {
+        return Vec::new();
+    };
+    let mut labels: Vec<String> = regex
+        .captures_iter(user)
+        .filter_map(|captures| captures.get(1))
+        .map(|value| format!("C{}", value.as_str()))
+        .collect();
+    labels.dedup();
+    labels.truncate(2);
+    labels
 }
 
 /// Share of the explanation's content tokens that appear in the answer.

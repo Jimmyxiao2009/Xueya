@@ -29,6 +29,11 @@ mod tests {
             mastery_delta: 0.2,
             follow_up_question: None,
             suggested_action: "Continue".into(),
+            verdict: None,
+            strengths: vec![],
+            gaps: vec![],
+            diagnoses: vec![],
+            confidence: None,
         };
         let mastery = next_mastery(0.5, &evaluation, 120);
         assert!((0.0..=1.0).contains(&mastery));

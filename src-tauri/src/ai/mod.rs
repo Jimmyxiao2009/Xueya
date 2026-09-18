@@ -1,7 +1,12 @@
+pub mod capabilities;
 pub mod embedding;
+pub mod endpoint;
+pub mod http;
 pub mod mock;
 pub mod openai_compatible;
 pub mod prompts;
 pub mod registry;
 pub mod schemas;
+pub mod stream;
+pub mod structured;
 pub mod traits;

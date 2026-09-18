@@ -6,17 +6,25 @@ pub struct HtmlParser;
 
 impl HtmlParser {
     fn strip_markup(input: &str) -> Result<String, AppError> {
+        let comments =
+            Regex::new(r"(?s)<!--.*?-->").map_err(|error| AppError::Internal(error.to_string()))?;
         let script = Regex::new(r"(?is)<script.*?</script>")
             .map_err(|error| AppError::Internal(error.to_string()))?;
         let style = Regex::new(r"(?is)<style.*?</style>")
             .map_err(|error| AppError::Internal(error.to_string()))?;
-        let breaks = Regex::new(r"(?i)<(br|/p|/div|/li|/h[1-6])\s*/?>")
+        let boilerplate = Regex::new(
+            r"(?is)<(?:nav|header|footer|aside|noscript|svg|template|form)[^>]*>.*?</(?:nav|header|footer|aside|noscript|svg|template|form)>",
+        )
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+        let breaks = Regex::new(r"(?i)<(br|/p|/div|/li|/h[1-6]|/tr|/section|/article)\s*/?>")
             .map_err(|error| AppError::Internal(error.to_string()))?;
         let tags =
             Regex::new(r"(?s)<[^>]+>").map_err(|error| AppError::Internal(error.to_string()))?;
 
-        let value = script.replace_all(input, " ");
+        let value = comments.replace_all(input, " ");
+        let value = script.replace_all(&value, " ");
         let value = style.replace_all(&value, " ");
+        let value = boilerplate.replace_all(&value, " ");
         let value = breaks.replace_all(&value, "\n");
         let value = tags.replace_all(&value, " ");
         Ok(Self::decode_entities(&value))

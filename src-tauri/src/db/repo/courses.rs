@@ -329,6 +329,31 @@ pub async fn node_exists_for_title(
     Ok(count > 0)
 }
 
+/// Idempotency guard for the unified adaptation pipeline.
+///
+/// A review node is uniquely identified by (course, knowledge point, source
+/// node). That is stricter than a title check and survives two different
+/// diagnostic paths naming the same weakness.
+pub async fn review_node_exists_for_point(
+    pool: &SqlitePool,
+    course_id: Uuid,
+    point_id: Uuid,
+    after_node_id: Uuid,
+) -> Result<bool, AppError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM course_nodes \
+         WHERE course_id = ? AND kind = 'review' \
+           AND json_extract(metadata_json, '$.knowledgePointId') = ? \
+           AND json_extract(metadata_json, '$.insertedFor') = ?",
+    )
+    .bind(course_id)
+    .bind(point_id.to_string())
+    .bind(after_node_id.to_string())
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
 /// Flag a route as shipped demo content rather than something the learner made.
 pub async fn mark_seeded(pool: &SqlitePool, id: Uuid) -> Result<(), AppError> {
     sqlx::query("UPDATE courses SET seeded = 1, updated_at = ? WHERE id = ?")

@@ -1,6 +1,6 @@
 use super::dto::{
-    LearningEvaluationDto, LearningFinishInput, LearningRespondInput, LearningStartDto,
-    LearningStartInput, LessonDto,
+    AdaptationEventDto, DiagnosisDto, LearningEvaluationDto, LearningFinishInput,
+    LearningRespondInput, LearningStartDto, LearningStartInput, LessonDto,
 };
 use crate::db::repo::courses as course_repo;
 use crate::error::AppError;
@@ -33,6 +33,7 @@ pub async fn learning_respond(
     let response = LearningService::new(&state)
         .respond(input.session_id, &input.answer, None)
         .await?;
+    let diagnoses: Vec<DiagnosisDto> = response.diagnoses.iter().map(DiagnosisDto::from).collect();
     Ok(LearningEvaluationDto {
         feedback: response.evaluation.feedback,
         correctness: response.evaluation.correctness,
@@ -42,6 +43,13 @@ pub async fn learning_respond(
         suggested_action: response.evaluation.suggested_action,
         mastery: response.mastery,
         attempts: response.attempts,
+        verdict: response.evaluation.verdict,
+        strengths: response.evaluation.strengths,
+        gaps: response.evaluation.gaps,
+        diagnoses,
+        confidence: response.evaluation.confidence,
+        adaptation: response.adaptation.as_ref().map(AdaptationEventDto::from),
+        inserted_node_id: response.inserted_node_id,
     })
 }
 

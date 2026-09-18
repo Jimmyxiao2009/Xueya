@@ -1,3 +1,4 @@
+use crate::ai::traits::validate_embeddings;
 use crate::db::repo::{chunks as chunk_repo, knowledge as knowledge_repo, sources as source_repo};
 use crate::domain::{
     Chunk, Document, KnowledgeObject, KnowledgeObjectKind, RelationType, Source, SourceKind,
@@ -159,47 +160,29 @@ impl<'a> IngestionService<'a> {
     ) -> Result<Source, AppError> {
         let parsed = Url::parse(url)
             .map_err(|error| AppError::InvalidInput(format!("invalid URL: {error}")))?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err(AppError::InvalidInput(
-                "only http/https URLs can be imported".into(),
-            ));
-        }
         if let Some(handle) = handle {
             handle.progress(0.02, "Downloading URL").await?;
         }
-        let response = self
-            .state
-            .http
-            .get(parsed.clone())
-            .send()
-            .await
-            .map_err(|error| AppError::Network(error.to_string()))?;
-        if !response.status().is_success() {
-            return Err(AppError::Search(format!(
-                "URL import returned {}",
-                response.status()
-            )));
-        }
-        if let Some(length) = response.content_length() {
-            if length as usize > MAX_URL_BYTES {
-                return Err(AppError::InvalidInput(format!(
-                    "remote document too large: {length} bytes"
-                )));
-            }
-        }
-        let mime_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| AppError::Network(error.to_string()))?;
-        if bytes.len() > MAX_URL_BYTES {
-            return Err(AppError::InvalidInput("remote document too large".into()));
-        }
-        let filename = parsed
+
+        // A dedicated client with redirects disabled so every hop can be
+        // re-validated before the next request.
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(30))
+            .user_agent("Verruckt/0.1 local source importer")
+            .build()
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        let fetched = crate::ingest::url_security::fetch_safely(
+            &client,
+            &parsed,
+            crate::ingest::url_security::UrlSecurityPolicy {
+                max_bytes: MAX_URL_BYTES,
+                ..crate::ingest::url_security::UrlSecurityPolicy::default()
+            },
+        )
+        .await?;
+        let filename = fetched
+            .final_url
             .path_segments()
             .and_then(|mut segments| segments.next_back())
             .filter(|value| !value.is_empty())
@@ -208,11 +191,11 @@ impl<'a> IngestionService<'a> {
         self.ingest_bytes(
             IngestInput {
                 filename,
-                bytes: bytes.to_vec(),
+                bytes: fetched.bytes,
                 kind: SourceKind::Url,
                 title,
-                uri: Some(url.to_owned()),
-                mime_type,
+                uri: Some(fetched.final_url.to_string()),
+                mime_type: fetched.content_type,
             },
             handle,
         )
@@ -234,34 +217,126 @@ impl<'a> IngestionService<'a> {
                 Err(error) => return Err(error),
             };
         let chunks = chunk_repo::get_chunks_by_ids(&self.state.pool, chunk_ids).await?;
-        for (batch_index, batch) in chunks.chunks(EMBED_BATCH_SIZE).enumerate() {
+        if chunks.is_empty() {
+            return Ok(());
+        }
+
+        // 1. Hash every chunk and reuse vectors from the cache. The cache key
+        // includes provider identity, model and dimension config, so identical
+        // content under the same embedding space costs zero provider calls.
+        let mut keys = Vec::with_capacity(chunks.len());
+        let mut vectors: Vec<Option<Vec<f32>>> = Vec::with_capacity(chunks.len());
+        for chunk in &chunks {
+            let key = crate::knowledge::embedding_cache::cache_key(
+                &config,
+                &config.embedding_model,
+                None,
+                &chunk.text,
+            );
+            let cached =
+                crate::knowledge::embedding_cache::get_cached_embedding(&self.state.pool, &key)
+                    .await?;
+            keys.push(key);
+            vectors.push(cached);
+        }
+
+        let misses: Vec<usize> = vectors
+            .iter()
+            .enumerate()
+            .filter_map(|(index, vector)| vector.is_none().then_some(index))
+            .collect();
+
+        // 2. Embed only cache misses, in batches, with cancellation checks.
+        for (batch_index, batch) in misses.chunks(EMBED_BATCH_SIZE).enumerate() {
             if let Some(handle) = handle {
                 if handle.is_cancelled() {
                     return Err(AppError::JobCancelled);
                 }
-                let progress = 0.55 + (batch_index as f64 / chunks.len().max(1) as f64) * 0.40;
+                let progress = 0.55 + (batch_index as f64 / misses.len().max(1) as f64) * 0.35;
                 handle
                     .progress(
-                        progress.min(0.95),
+                        progress.min(0.90),
                         format!("Embedding chunk batch {}", batch_index + 1),
                     )
                     .await?;
             }
-            let texts: Vec<String> = batch.iter().map(|chunk| chunk.text.clone()).collect();
-            let vectors = embedding_provider.embed(texts).await?;
-            if vectors.len() != batch.len() {
+            let texts: Vec<String> = batch
+                .iter()
+                .map(|index| chunks[*index].text.clone())
+                .collect();
+            let embedded = embedding_provider.embed(texts).await?;
+            validate_embeddings(&embedded)?;
+            if embedded.len() != batch.len() {
                 return Err(AppError::Embedding(format!(
                     "embedding provider returned {} vectors for {} chunks",
-                    vectors.len(),
+                    embedded.len(),
                     batch.len()
                 )));
             }
-            for (chunk, vector) in batch.iter().zip(vectors) {
-                self.state
-                    .vector_index
-                    .upsert(chunk.id, config.id, &config.embedding_model, &vector)
-                    .await?;
+            for (offset, vector) in embedded.into_iter().enumerate() {
+                let index = batch[offset];
+                crate::knowledge::embedding_cache::put_cached_embedding(
+                    &self.state.pool,
+                    &keys[index],
+                    config.id,
+                    &config.embedding_model,
+                    &vector,
+                )
+                .await?;
+                vectors[index] = Some(vector);
             }
+        }
+
+        let final_vectors: Vec<Vec<f32>> = vectors
+            .into_iter()
+            .enumerate()
+            .map(|(index, vector)| {
+                vector.ok_or_else(|| {
+                    AppError::Embedding(format!("chunk {index} has no embedding after batching"))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let dimension = validate_embeddings(&final_vectors)?;
+
+        // 3. A provider/model/dimension change invalidates the old index before
+        // any new vector is written. This is what makes `needs_reindex` honest.
+        crate::knowledge::embedding_cache::reconcile_index_metadata(
+            &self.state.pool,
+            config.id,
+            &config.embedding_model,
+            dimension,
+        )
+        .await?;
+
+        for (chunk, vector) in chunks.iter().zip(final_vectors.iter()) {
+            self.state
+                .vector_index
+                .upsert(chunk.id, config.id, &config.embedding_model, vector)
+                .await?;
+        }
+
+        // 4. Record which sources are fully indexed under this embedding space.
+        let mut document_source_ids = std::collections::HashMap::new();
+        for chunk in &chunks {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                document_source_ids.entry(chunk.document_id)
+            {
+                if let Ok(document) =
+                    source_repo::get_document(&self.state.pool, chunk.document_id).await
+                {
+                    entry.insert(document.source_id);
+                }
+            }
+        }
+        for source_id in document_source_ids.values() {
+            crate::knowledge::embedding_cache::mark_source_index_ready(
+                &self.state.pool,
+                *source_id,
+                config.id,
+                &config.embedding_model,
+                dimension,
+            )
+            .await?;
         }
         Ok(())
     }

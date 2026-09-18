@@ -42,6 +42,12 @@ pub struct ChatRequest {
     pub temperature: f32,
     pub max_tokens: Option<u32>,
     pub json_mode: bool,
+    /// Optional JSON Schema for providers that support native structured output.
+    #[serde(default)]
+    pub json_schema: Option<serde_json::Value>,
+    /// Ask the provider to stream. `chat_stream` always sets this internally.
+    #[serde(default)]
+    pub stream: bool,
 }
 
 impl ChatRequest {
@@ -52,6 +58,8 @@ impl ChatRequest {
             temperature: 0.2,
             max_tokens: None,
             json_mode: false,
+            json_schema: None,
+            stream: false,
         }
     }
 
@@ -60,6 +68,15 @@ impl ChatRequest {
             json_mode: true,
             ..Self::new(model, messages)
         }
+    }
+
+    pub fn with_schema(mut self, name: impl Into<String>, schema: serde_json::Value) -> Self {
+        self.json_schema = Some(serde_json::json!({
+            "name": name.into(),
+            "schema": schema,
+            "strict": true,
+        }));
+        self
     }
 }
 
@@ -107,9 +124,26 @@ pub trait ChatProvider: Send + Sync {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingProbe {
+    pub dimension: usize,
+    pub model: String,
+}
+
 #[async_trait]
 pub trait EmbeddingProvider: Send + Sync {
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, AppError>;
+
+    /// Probe with a minimal string and return the *actual* dimension the
+    /// provider produced. No caller should ever assume 1536/3072/1024.
+    async fn probe(&self) -> Result<EmbeddingProbe, AppError> {
+        let vectors = self.embed(vec!["orbit-embedding-probe".to_owned()]).await?;
+        let dimension = validate_embeddings(&vectors)?;
+        Ok(EmbeddingProbe {
+            dimension,
+            model: "unknown".to_owned(),
+        })
+    }
 
     async fn embed_batch(
         &self,
@@ -125,5 +159,52 @@ pub trait EmbeddingProvider: Send + Sync {
             output.append(&mut values);
         }
         Ok(output)
+    }
+}
+
+/// Validate an embedding matrix: non-empty, all finite and all the same length.
+pub fn validate_embeddings(vectors: &[Vec<f32>]) -> Result<usize, AppError> {
+    let first = vectors
+        .first()
+        .ok_or_else(|| AppError::Embedding("embedding response was empty".into()))?;
+    if first.is_empty() {
+        return Err(AppError::Embedding("embedding vector is empty".into()));
+    }
+    let dimension = first.len();
+    for (index, vector) in vectors.iter().enumerate() {
+        if vector.is_empty() {
+            return Err(AppError::Embedding(format!(
+                "embedding vector {index} is empty"
+            )));
+        }
+        if vector.len() != dimension {
+            return Err(AppError::Embedding(format!(
+                "embedding dimension mismatch: vector 0 has {dimension}, vector {index} has {}",
+                vector.len()
+            )));
+        }
+        if vector.iter().any(|value| !value.is_finite()) {
+            return Err(AppError::Embedding(format!(
+                "embedding vector {index} contains NaN or Infinity"
+            )));
+        }
+    }
+    Ok(dimension)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_empty_non_finite_and_ragged_embeddings() {
+        assert!(validate_embeddings(&[]).is_err());
+        assert!(validate_embeddings(&[vec![]]).is_err());
+        assert!(validate_embeddings(&[vec![1.0, f32::NAN]]).is_err());
+        assert!(validate_embeddings(&[vec![1.0, 2.0], vec![3.0]]).is_err());
+        assert_eq!(
+            validate_embeddings(&[vec![1.0, 2.0], vec![3.0, 4.0]]).unwrap(),
+            2
+        );
     }
 }

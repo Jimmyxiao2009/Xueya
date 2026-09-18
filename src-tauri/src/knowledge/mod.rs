@@ -1,6 +1,9 @@
 pub mod chunk;
 pub mod embedding;
+pub mod embedding_cache;
+pub mod fts;
 pub mod graph;
+pub mod hybrid;
 pub mod rerank;
 pub mod retrieval;
 pub mod vector_index;

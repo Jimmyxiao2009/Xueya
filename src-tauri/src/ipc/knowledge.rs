@@ -1,8 +1,10 @@
 use super::dto::{
     ChunkSearchResultDto, KnowledgeObjectDto, KnowledgeRelationDto, KnowledgeSearchInput,
+    RetrievalDebugInput, RetrievalHitDto,
 };
 use crate::domain::RelationType;
 use crate::error::AppError;
+use crate::knowledge::hybrid::{HybridRetriever, RetrievalFilter};
 use crate::knowledge_fs::query as knowledge_query;
 use crate::services::knowledge_service::KnowledgeService;
 use crate::state::AppState;
@@ -33,6 +35,38 @@ pub async fn knowledge_search(
         });
     }
     Ok(output)
+}
+
+/// Development/debug inspector: returns the exact hybrid hit list, including
+/// the lexical and vector ranks, without pretending it is a production search.
+#[tauri::command]
+pub async fn knowledge_retrieval_debug(
+    state: State<'_, AppState>,
+    input: RetrievalDebugInput,
+) -> Result<Vec<RetrievalHitDto>, AppError> {
+    let filter = RetrievalFilter {
+        route_id: input.route_id,
+        source_ids: input.source_ids,
+        knowledge_point_ids: input.knowledge_point_ids,
+        top_k: input.top_k.unwrap_or(8).clamp(1, 20),
+    };
+    let hits = HybridRetriever::new(&state)
+        .retrieve(&input.query, filter)
+        .await?;
+    Ok(hits
+        .into_iter()
+        .map(|hit| RetrievalHitDto {
+            chunk_id: hit.chunk_id,
+            source_id: hit.source_id,
+            source_title: hit.source_title,
+            text: hit.text,
+            vector_rank: hit.vector_rank,
+            lexical_rank: hit.lexical_rank,
+            vector_score: hit.vector_score,
+            lexical_score: hit.lexical_score,
+            combined_score: hit.combined_score,
+        })
+        .collect())
 }
 
 #[tauri::command]

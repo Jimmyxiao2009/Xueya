@@ -33,26 +33,64 @@ pub struct SettingsUpdateInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProviderCapabilitiesDto {
+    pub chat_completions: bool,
+    pub responses: bool,
+    pub streaming: bool,
+    pub structured_output: bool,
+    pub embeddings: bool,
+    pub embedding_dimension: Option<usize>,
+    pub vision_optional: bool,
+    pub protocol: Option<String>,
+    pub probe_errors: Vec<String>,
+}
+
+impl From<crate::ai::capabilities::ProviderCapabilities> for ProviderCapabilitiesDto {
+    fn from(value: crate::ai::capabilities::ProviderCapabilities) -> Self {
+        Self {
+            chat_completions: value.chat_completions,
+            responses: value.responses,
+            streaming: value.streaming,
+            structured_output: value.structured_output,
+            embeddings: value.embeddings,
+            embedding_dimension: value.embedding_dimension,
+            vision_optional: value.vision_optional,
+            protocol: value.protocol.map(|protocol| protocol.as_str().to_owned()),
+            probe_errors: value.probe_errors,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderDto {
     pub id: Uuid,
     pub display_name: String,
     pub base_url: String,
     pub chat_model: String,
     pub embedding_model: String,
+    pub protocol: String,
     pub enabled: bool,
     pub has_api_key: bool,
+    pub masked_hint: Option<String>,
 }
 
 impl ProviderDto {
-    pub async fn from_config(config: ProviderConfig, has_api_key: bool) -> Self {
+    pub async fn from_config(
+        config: ProviderConfig,
+        has_api_key: bool,
+        masked_hint: Option<String>,
+    ) -> Self {
         Self {
             id: config.id,
             display_name: config.display_name,
             base_url: config.base_url,
             chat_model: config.chat_model,
             embedding_model: config.embedding_model,
+            protocol: config.protocol.as_str().to_owned(),
             enabled: config.enabled,
             has_api_key,
+            masked_hint,
         }
     }
 }
@@ -66,7 +104,18 @@ pub struct ProviderUpsertInput {
     pub chat_model: String,
     pub embedding_model: String,
     pub api_key: Option<String>,
+    #[serde(default)]
+    pub protocol: Option<String>,
     pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamChatInput {
+    pub provider_id: Uuid,
+    pub prompt: String,
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +123,8 @@ pub struct ProviderUpsertInput {
 pub struct ProviderTestResultDto {
     pub ok: bool,
     pub message: String,
+    pub protocol: Option<String>,
+    pub capabilities: Option<ProviderCapabilitiesDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +138,15 @@ pub struct SourceDto {
     pub status: String,
     pub content_hash: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSummaryDto {
+    pub source_id: Uuid,
+    pub summary: String,
+    pub key_points: Vec<String>,
+    pub cached: bool,
 }
 
 impl From<&Source> for SourceDto {
@@ -168,6 +228,34 @@ pub struct ChunkSearchResultDto {
     pub score: f32,
     pub source_id: Option<Uuid>,
     pub source_title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetrievalDebugInput {
+    pub query: String,
+    #[serde(default)]
+    pub route_id: Option<Uuid>,
+    #[serde(default)]
+    pub source_ids: Option<Vec<Uuid>>,
+    #[serde(default)]
+    pub knowledge_point_ids: Option<Vec<Uuid>>,
+    #[serde(default)]
+    pub top_k: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetrievalHitDto {
+    pub chunk_id: Uuid,
+    pub source_id: Uuid,
+    pub source_title: String,
+    pub text: String,
+    pub vector_rank: Option<usize>,
+    pub lexical_rank: Option<usize>,
+    pub vector_score: Option<f32>,
+    pub lexical_score: Option<f32>,
+    pub combined_score: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -466,6 +554,28 @@ pub struct LearningFinishInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DiagnosisDto {
+    pub kind: String,
+    pub knowledge_point_ids: Vec<Uuid>,
+    pub confidence: f64,
+    pub severity: f64,
+    pub explanation: String,
+}
+
+impl From<&crate::domain::Diagnosis> for DiagnosisDto {
+    fn from(value: &crate::domain::Diagnosis) -> Self {
+        Self {
+            kind: value.kind.as_str().to_owned(),
+            knowledge_point_ids: value.knowledge_point_ids.clone(),
+            confidence: value.confidence,
+            severity: value.severity,
+            explanation: value.explanation.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LearningEvaluationDto {
     pub feedback: String,
     pub correctness: f64,
@@ -475,6 +585,13 @@ pub struct LearningEvaluationDto {
     pub suggested_action: String,
     pub mastery: f64,
     pub attempts: i64,
+    pub verdict: Option<String>,
+    pub strengths: Vec<String>,
+    pub gaps: Vec<String>,
+    pub diagnoses: Vec<DiagnosisDto>,
+    pub confidence: Option<f64>,
+    pub adaptation: Option<AdaptationEventDto>,
+    pub inserted_node_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -665,12 +782,36 @@ pub struct TutorTurnInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TutorCitationDto {
+    pub chunk_id: Uuid,
+    pub source_id: Uuid,
+    pub source_title: String,
+    pub text: String,
+}
+
+impl From<&crate::services::tutor_service::TutorCitation> for TutorCitationDto {
+    fn from(value: &crate::services::tutor_service::TutorCitation) -> Self {
+        Self {
+            chunk_id: value.chunk_id,
+            source_id: value.source_id,
+            source_title: value.source_title.clone(),
+            text: value.text.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TutorTurnDto {
     pub message: String,
     pub suggested_action: String,
     pub diagnosis: Option<String>,
+    pub diagnosis_detail: Option<DiagnosisDto>,
+    pub citations: Vec<TutorCitationDto>,
+    pub grounding: String,
     pub generated_by: String,
     pub route_updated: bool,
+    pub inserted_node_id: Option<Uuid>,
     pub adaptation: Option<AdaptationEventDto>,
 }
 
