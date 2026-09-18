@@ -163,6 +163,7 @@ export class FakeBackend {
     embeddingModel: string;
     enabled: boolean;
     apiKey: string | null;
+    protocol: string;
   }> = [];
   settings: { searchProvider: string; braveApiKey: string | null } = {
     searchProvider: "none",
@@ -452,6 +453,13 @@ export class FakeBackend {
           suggestedAction: "continue",
           mastery: 0.42,
           attempts: 1,
+          verdict: "partial",
+          strengths: ["方向正确"],
+          gaps: ["缺少为什么"],
+          diagnoses: [],
+          confidence: 0.62,
+          adaptation: null,
+          insertedNodeId: null,
         };
       case "tutor_send": {
         const session = this.sessions.get(String(input.sessionId));
@@ -467,7 +475,19 @@ export class FakeBackend {
             : "收到。我会根据你的回答继续提问。",
           suggestedAction: confused ? "explain" : "continue",
           diagnosis: confused ? "学习者主动表示不理解" : null,
+          diagnosisDetail: confused
+            ? {
+                kind: "LowConfidence",
+                knowledgePointIds: [],
+                confidence: 0.8,
+                severity: 0.5,
+                explanation: "学习者主动表示不理解",
+              }
+            : null,
+          citations: [],
+          grounding: "model_knowledge",
           generatedBy: "mock",
+          insertedNodeId: null,
           adaptation,
         };
       }
@@ -528,6 +548,8 @@ export class FakeBackend {
           enabled: provider.enabled,
           // The key itself is never returned, exactly like the Rust command.
           hasApiKey: Boolean(provider.apiKey),
+          protocol: provider.protocol,
+          maskedHint: provider.apiKey ? "sk-…" : null,
         }));
       case "provider_upsert": {
         const existing = input.id
@@ -543,12 +565,14 @@ export class FakeBackend {
             embeddingModel: "",
             enabled: true,
             apiKey: null,
+            protocol: "auto",
           } as (typeof this.providers)[number]);
         target.displayName = String(input.displayName ?? target.displayName);
         target.baseUrl = String(input.baseUrl ?? target.baseUrl);
         target.chatModel = String(input.chatModel ?? target.chatModel);
         target.embeddingModel = String(input.embeddingModel ?? target.embeddingModel);
         target.enabled = Boolean(input.enabled ?? target.enabled);
+        target.protocol = String(input.protocol ?? target.protocol ?? "auto");
         if (typeof input.apiKey === "string" && input.apiKey) {
           target.apiKey = input.apiKey;
         }
@@ -561,13 +585,30 @@ export class FakeBackend {
           embeddingModel: target.embeddingModel,
           enabled: target.enabled,
           hasApiKey: Boolean(target.apiKey),
+          protocol: target.protocol,
+          maskedHint: target.apiKey ? "sk-…" : null,
         };
       }
       case "provider_delete":
         this.providers = this.providers.filter((provider) => provider.id !== id);
         return null;
       case "provider_test":
-        return { ok: true, message: "reachable" };
+        return {
+          ok: true,
+          message: "reachable",
+          protocol: "chat_completions",
+          capabilities: {
+            chatCompletions: true,
+            responses: false,
+            streaming: true,
+            structuredOutput: true,
+            embeddings: true,
+            embeddingDimension: 64,
+            visionOptional: false,
+            protocol: "chat_completions",
+            probeErrors: [],
+          },
+        };
       case "source_reindex": {
         const jobId = `reindex-job-${this.jobs.size + 1}`;
         this.jobs.set(jobId, {

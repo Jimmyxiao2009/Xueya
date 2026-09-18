@@ -24,6 +24,20 @@ export interface Provider {
   embeddingModel: string;
   enabled: boolean;
   hasApiKey: boolean;
+  protocol: string;
+  maskedHint?: string | null;
+}
+
+export interface ProviderCapabilities {
+  chatCompletions: boolean;
+  responses: boolean;
+  streaming: boolean;
+  structuredOutput: boolean;
+  embeddings: boolean;
+  embeddingDimension?: number | null;
+  visionOptional: boolean;
+  protocol?: string | null;
+  probeErrors: string[];
 }
 
 export interface Source {
@@ -215,6 +229,21 @@ export interface QuizResult {
   insertedNodeId?: string | null;
 }
 
+export interface Diagnosis {
+  kind: string;
+  knowledgePointIds: string[];
+  confidence: number;
+  severity: number;
+  explanation: string;
+}
+
+export interface TutorCitation {
+  chunkId: string;
+  sourceId: string;
+  sourceTitle: string;
+  text: string;
+}
+
 export interface LearningEvaluation {
   feedback: string;
   correctness: number;
@@ -224,14 +253,25 @@ export interface LearningEvaluation {
   suggestedAction: string;
   mastery: number;
   attempts: number;
+  verdict?: string | null;
+  strengths: string[];
+  gaps: string[];
+  diagnoses: Diagnosis[];
+  confidence?: number | null;
+  adaptation?: AdaptationEvent | null;
+  insertedNodeId?: string | null;
 }
 
 export interface TutorTurn {
   message: string;
   suggestedAction: string;
   diagnosis?: string | null;
+  diagnosisDetail?: Diagnosis | null;
+  citations: TutorCitation[];
+  grounding: string;
   generatedBy: string;
   routeUpdated: boolean;
+  insertedNodeId?: string | null;
   adaptation?: AdaptationEvent | null;
 }
 
@@ -268,9 +308,14 @@ export const api = {
     embeddingModel: string;
     apiKey?: string;
     enabled?: boolean;
+    protocol?: string;
   }) => call<Provider>("provider_upsert", { input }),
   providerDelete: (id: string) => call<void>("provider_delete", { id }),
-  providerTest: (id: string) => call<{ ok: boolean; message: string }>("provider_test", { id }),
+  providerTest: (id: string) =>
+    call<{ ok: boolean; message: string; protocol?: string | null; capabilities?: ProviderCapabilities | null }>(
+      "provider_test",
+      { id },
+    ),
   sourceList: () => call<Source[]>("source_list"),
   sourceImportBytes: (input: {
     filename: string;

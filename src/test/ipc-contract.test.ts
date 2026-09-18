@@ -40,9 +40,12 @@ function fakeCommands(): Set<string> {
  */
 const BACKEND_ONLY = [
   "job_subscribe", // the frontend polls job_get instead
+  "provider_stream_chat", // dev/streaming shell hook, not a screen yet
   "knowledge_get_related", // reserved for a future related-items view
+  "knowledge_retrieval_debug", // dev-only hybrid retrieval inspector
   "search_web", // called through sourceStore.collect, not directly by a screen
   "source_import_files", // the UI imports bytes or a URL
+  "source_summarize", // backend-only cache until the materials tab exposes it
 ];
 
 describe("ipc contract", () => {
