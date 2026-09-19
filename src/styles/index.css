@@ -45,19 +45,19 @@
 }
 
 @theme {
-  /* Palette — keep in sync with src/styles/tokens.css */
-  --color-canvas: #f8f7f4;
-  --color-paper: #fffefa;
-  --color-primary: #302e2a;
-  --color-muted: #7e7a72;
-  --color-subtle: #e8e4dc;
-  --color-line: #e8e4dc;
-  --color-accent: #b65f41;
-  --color-success: #587454;
-  --color-review: #78638e;
-  --color-quiz: #a67635;
-  --color-canvas-deep: #eae7e0;
-  --color-ink-strong: #34312b;
+  /* Palette — keep in sync with src/styles/tokens.css (Lighthouse / Dark Fog) */
+  --color-canvas: #0d1114;
+  --color-paper: #131a1f;
+  --color-primary: #e8eae7;
+  --color-muted: #a9b2b0;
+  --color-subtle: rgba(255, 255, 255, 0.07);
+  --color-line: rgba(255, 255, 255, 0.07);
+  --color-accent: #e6c084;
+  --color-success: #b9d0a8;
+  --color-review: #8d97a3;
+  --color-quiz: #d9a866;
+  --color-canvas-deep: #0a0e11;
+  --color-ink-strong: #f0f2ee;
 
   /* Typography */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
@@ -75,9 +75,9 @@
   --radius-2xl: 24px;
 
   /* Shadows */
-  --shadow-panel: 0 4px 18px #84604408;
-  --shadow-float: 0 5px 0 #1e1b16, 0 10px 35px #27231c22;
-  --shadow-device: 0 0 70px #443a2910;
+  --shadow-panel: 0 6px 24px rgba(0, 0, 0, 0.38);
+  --shadow-float: 0 5px 0 #05080a, 0 12px 38px rgba(0, 0, 0, 0.5);
+  --shadow-device: 0 0 90px rgba(0, 0, 0, 0.55);
 
   /* Motion */
   --ease-spring: cubic-bezier(0.22, 1.12, 0.36, 1);

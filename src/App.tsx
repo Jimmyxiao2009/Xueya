@@ -13,6 +13,7 @@ import { flushSync } from "react-dom";
 import { watchJob } from "@/api";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { Toast } from "@/components/layout/Toast";
+import { Lighthouse } from "@/components/ui/Lighthouse";
 import { RoadmapLayer } from "@/components/roadmap/RoadmapLayer";
 import { RoadmapScreen } from "@/components/roadmap/RoadmapScreen";
 import { NoticeBanner } from "@/components/roadmap/NoticeBanner";
@@ -599,10 +600,10 @@ export default function App() {
       <div id="screen" ref={screenRef}>
         <main className="generation-page">
           <span className="generation-orbit">
-            <span className="icon" />
+            <Lighthouse height={64} className="pulse" />
           </span>
           <h1 className="page-title">正在打开学习空间</h1>
-          <p>Orbit 正在准备你的路线…</p>
+          <p>Lighthouse 正在为你点亮第一段路…</p>
         </main>
         <Toast />
       </div>

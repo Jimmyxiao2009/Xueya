@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { LearningRoute, RouteNode, TutorCitation } from "@/api";
 import { Icon } from "@/components/ui/Icon";
+import { Lighthouse } from "@/components/ui/Lighthouse";
 import { SoftBlur } from "@/components/ui/SoftBlur";
 import { LearningPlan } from "@/components/learning/LearningPlan";
 import { QuizCard } from "@/components/learning/QuizCard";
@@ -139,7 +140,7 @@ export function LearningScreen({
           </button>
           <div className="chat-headinfo">
             <h2>{node?.title ?? route.title}</h2>
-            <span className="small">Orbit · 和你一起理解</span>
+            <span className="small">Lighthouse · 和你一起理解</span>
           </div>
           <button className="secondary" onClick={onHome}>
             <Icon name="nodes" /> 路线
@@ -157,7 +158,7 @@ export function LearningScreen({
 
         <div className="chat-body scroll-pane">
           <div className="assistant-label">
-            <Icon name="orbit" /> Orbit
+            <Lighthouse height={24} className="pulse" /> Lighthouse
           </div>
           <div className="message">
             {store.lesson ? (
@@ -226,7 +227,7 @@ export function LearningScreen({
           ) : (
             <>
               <div className="assistant-label question-author">
-                <Icon name="spark" /> Orbit 向你提问
+                <Icon name="spark" /> Lighthouse 向你提问
               </div>
               <div id="quiz">
                 {question ? (
