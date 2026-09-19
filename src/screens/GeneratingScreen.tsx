@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Icon } from "@/components/ui/Icon";
+import { Lighthouse } from "@/components/ui/Lighthouse";
 import { jobPhaseCopy, useJobStore, type JobPhase } from "@/stores/jobStore";
 
 interface GeneratingScreenProps {
@@ -46,7 +46,7 @@ export function GeneratingScreen({ topic, onCancel, onReady }: GeneratingScreenP
   return (
     <main className="generation-page">
       <span className="generation-orbit">
-        <Icon name="orbit" />
+        <Lighthouse height={72} className="pulse" />
       </span>
       <h1 className="page-title">
         为「{topic}」

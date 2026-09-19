@@ -1,6 +1,7 @@
 import { useMemo, type CSSProperties, type Ref } from "react";
 import type { LearningRoute, RouteDetail } from "@/api";
 import { Icon } from "@/components/ui/Icon";
+import { Lighthouse } from "@/components/ui/Lighthouse";
 import { chapterTitle, nodeFace } from "@/lib/format";
 import { nodeMeta } from "@/lib/nodeMeta";
 import { completedPath, roadGeometry } from "@/lib/roadPath";
@@ -37,6 +38,7 @@ export function RoadmapScreen({
   const completedCount = nodes.filter((node) => node.status === "completed").length;
   const currentNodeId =
     route.currentNodeId ?? nodes.find((node) => node.status !== "completed")?.id ?? null;
+  const activeIndex = nodes.findIndex((node) => node.id === currentNodeId);
 
   return (
     <main
@@ -71,6 +73,19 @@ export function RoadmapScreen({
               style={{ opacity: completedCount > 0 ? 1 : 0 }}
             />
           </svg>
+          {/* The lighthouse beam: a single cone of warm light that finds the
+              current node and leaves the rest of the sea in fog. Nodes sit at
+              x=68 (even) / x=332 (odd) out of a 400-wide road. */}
+          {currentNodeId && activeIndex >= 0 ? (
+            <div
+              className="light-beam"
+              aria-hidden="true"
+              style={{
+                top: geometry.stopTop(activeIndex) - 130,
+                left: `${((activeIndex % 2 === 0 ? 68 : 332) / 400) * 100}%`,
+              }}
+            />
+          ) : null}
           {nodes.map((node, index) => {
             const done = node.status === "completed";
             const current = !done && node.id === currentNodeId;
@@ -130,7 +145,7 @@ export function RoadmapScreen({
       </section>
       <div className="home-footer">
         <span>
-          <Icon name="orbit" /> orbit
+          <Lighthouse height={20} /> orbit
         </span>
         <span>左右滑动，切换学习路线</span>
       </div>

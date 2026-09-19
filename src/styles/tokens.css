@@ -1,6 +1,6 @@
-/* Orbit design tokens
+/* Verruckt — Lighthouse / Dark Fog design tokens
  * ---------------------------------------------------------------------------
- * These are the CSS custom properties the ported design layer
+ * These are the CSS custom properties the design layer
  * (components.css / effects.css / motion.css) consumes.
  *
  * The palette values are the *same* literals declared in `@theme` inside
@@ -13,34 +13,50 @@
  *   --color-subtle  -> border-subtle    --color-accent  -> text-accent/bg-accent
  *   --color-success -> text-success     --color-review  -> text-review
  *   --color-quiz    -> text-quiz
+ *
+ * Theme: a quiet dark learning environment where knowledge emerges from fog
+ * and an intelligent lighthouse guides the learner through it. Light — not
+ * colour — is the accent. States are expressed through illumination, opacity
+ * and surface, never through a rainbow of hues.
  */
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 
-  /* ---- Core palette (frozen from the Orbit prototype) ---- */
-  --bg: #f8f7f4;
-  --panel: #fffefa;
-  --text: #302e2a;
-  --muted: #7e7a72;
-  --line: #e8e4dc;
-  --accent: #b65f41;
-  --green: #b65f41;
-  --purple: #78638e;
-  --orange: #a67635;
-  --success: #587454;
+  /* ---- Atmospheric darkness (deep blue-black, never pure #000) ---- */
+  --bg: #0d1114;             /* deep-sea blue-black */
+  --panel: #131a1f;          /* elevated charcoal surface */
+  --text: #e8eae7;           /* primary: warm off-white */
+  --muted: #a9b2b0;          /* secondary */
+  --line: rgba(255, 255, 255, 0.07);  /* very weak borders */
+  --accent: #e6c084;         /* warm lighthouse light (soft amber) */
+  --green: #e6c084;          /* mastered = stable warm light */
+  --purple: #8d97a3;         /* review = fading cool light */
+  --orange: #d9a866;         /* quiz = focused amber signal */
+  --success: #b9d0a8;        /* dim stable light for correct */
 
-  /* ---- Derived surfaces ---- */
-  --paper-strong: #fffdf8;
-  --canvas-deep: #eae7e0;
-  --warm-gray: #716b61;
-  --warm-gray-soft: #969086;
-  --warm-shadow: #443a29;
-  --bar-track: #eeeae3;
-  --bar-fill: #c98166;
-  --node-face: #d7d0c4;
+  /* ---- Surface system: background / elevated / floating / focused ---- */
+  --paper-strong: #18222a;   /* elevated surface */
+  --canvas-deep: #0a0e11;    /* deepest background, page edges */
+  --surface-float: #1b252d;  /* floating surface (cards in fog) */
+  --surface-focus: #223038;  /* focused surface, slightly warmer/brighter */
+  --warm-gray: #aab3b1;
+  --warm-gray-soft: #6d7778;
+  --warm-shadow: #000000;
+  --bar-track: #1c262d;
+  --bar-fill: #d9ac72;
+  --node-face: #222d35;
 
-  /* ---- Radii ---- */
+  /* ---- Light & fog primitives (the atmosphere system) ---- */
+  --light: #efd7a4;              /* warm lighthouse light */
+  --light-soft: #f4e6c4;         /* soft golden white */
+  --light-halo: rgba(230, 192, 132, 0.16);
+  --light-halo-strong: rgba(230, 192, 132, 0.30);
+  --fog: rgba(148, 168, 178, 0.05);
+  --fog-strong: rgba(148, 168, 178, 0.10);
+  --ink-veil: rgba(13, 17, 20, 0.72);
+
+  /* ---- Radii (unchanged editorial geometry) ---- */
   --r-xs: 8px;
   --r-sm: 12px;
   --r-md: 14px;
@@ -49,11 +65,12 @@
   --r-2xl: 24px;
   --r-pill: 999px;
 
-  /* ---- Shadows ---- */
-  --shadow-panel: 0 4px 18px #84604408;
-  --shadow-float: 0 5px 0 #1e1b16, 0 10px 35px #27231c22;
-  --shadow-press: 0 1px 0 #151410;
-  --shadow-device: 0 0 70px #443a2910;
+  /* ---- Shadows (deep, soft; no warm paper shadow) ---- */
+  --shadow-panel: 0 6px 24px rgba(0, 0, 0, 0.38);
+  --shadow-float: 0 5px 0 #05080a, 0 12px 38px rgba(0, 0, 0, 0.5);
+  --shadow-press: 0 1px 0 #04060a;
+  --shadow-device: 0 0 90px rgba(0, 0, 0, 0.55);
+  --shadow-glow: 0 0 26px var(--light-halo);
 
   /* ---- Motion ---- */
   --spring: cubic-bezier(0.22, 1.12, 0.36, 1);
