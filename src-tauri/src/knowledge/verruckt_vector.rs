@@ -139,19 +139,32 @@ impl VerrucktVectorStoreAdapter {
                 .push((record.chunk_id, record.vector));
         }
 
+        // Drop mapped handles; the incremental pass below reopens what it
+        // reuses. Startup therefore *verifies* valid indexes instead of
+        // rewriting every derived directory.
         self.spaces.lock().clear();
-        remove_derived_directories(&self.root)?;
         for (key, records) in grouped {
             let root = self.root.clone();
             let build_key = key.clone();
-            let built = spawn_blocking(move || {
+            let space = spawn_blocking(move || {
                 let path = root.join(build_key.directory_name());
+                // Reuse an existing valid generation when its live count
+                // already matches SQLite; only missing/corrupt/stale spaces
+                // are rebuilt from the authoritative embeddings.
+                if let Ok(index) = EngineIndex::open(&path) {
+                    if let Ok(stats) = index.stats() {
+                        if stats.live_count as usize == records.len() {
+                            return Ok::<Space, AppError>(Space { index });
+                        }
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&path);
                 std::fs::create_dir_all(&path)?;
                 let index = EngineIndex::create(&path, engine_config(build_key.dimension))
                     .map_err(engine_error)?;
-                for (id, vector) in records {
+                for (id, vector) in &records {
                     index
-                        .insert(VectorId::from_uuid(id), &vector, Metadata::empty())
+                        .insert(VectorId::from_uuid(*id), vector, Metadata::empty())
                         .map_err(engine_error)?;
                 }
                 index.flush().map_err(engine_error)?;
@@ -161,7 +174,7 @@ impl VerrucktVectorStoreAdapter {
             .map_err(|error| {
                 AppError::Internal(format!("vector rebuild task failed: {error}"))
             })??;
-            self.spaces.lock().insert(key, Arc::new(Mutex::new(built)));
+            self.spaces.lock().insert(key, Arc::new(Mutex::new(space)));
         }
         Ok(())
     }
@@ -369,19 +382,6 @@ fn open_or_create_space(root: &Path, key: SpaceKey) -> Result<Space, AppError> {
         Err(error) => return Err(engine_error(error)),
     };
     Ok(Space { index })
-}
-
-fn remove_derived_directories(root: &Path) -> Result<(), AppError> {
-    if !root.exists() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            std::fs::remove_dir_all(entry.path())?;
-        }
-    }
-    Ok(())
 }
 
 fn engine_error(error: verruckt_vector::VectorError) -> AppError {
