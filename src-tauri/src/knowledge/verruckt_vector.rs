@@ -322,6 +322,25 @@ impl VectorIndex for VerrucktVectorStoreAdapter {
     async fn flush(&self) -> Result<(), AppError> {
         self.flush_all().await
     }
+
+    async fn info(&self) -> Option<super::vector_index::VectorBackendStats> {
+        // Aggregate over the open spaces; a desktop app normally has one.
+        let first = self.spaces.lock().values().next().cloned();
+        let first = first?;
+        let stats = spawn_blocking(move || {
+            let guard = first.lock();
+            guard.index.stats().ok()
+        })
+        .await
+        .ok()??;
+        Some(super::vector_index::VectorBackendStats {
+            algorithm: format!("{:?}", stats.algorithm).to_lowercase(),
+            vector_count: stats.live_count,
+            deleted_count: Some(stats.deleted_count),
+            dimension: stats.dimensions,
+            index_bytes: Some(stats.disk_bytes),
+        })
+    }
 }
 
 fn engine_config(dimension: usize) -> IndexConfig {

@@ -114,6 +114,24 @@ fn measure(dim: usize, n: usize, algorithm: Algorithm, queries: usize) -> Measur
     let start = Instant::now();
     let reopened = VectorIndex::open(dir).unwrap();
     let open_ms = start.elapsed().as_secs_f64() * 1000.0;
+    // Build the Exact ground-truth index once per (dim, N) and reuse it for
+    // every query; rebuilding it per query would dominate the measurement.
+    let exact_for_truth = if algorithm == Algorithm::Hnsw {
+        let exact_dir_path = temp_dir("truth");
+        let exact_dir = exact_dir_path.as_path();
+        let mut cfg = IndexConfig::new(dim as u32, Metric::Cosine);
+        cfg.algorithm = Algorithm::Exact;
+        let index = VectorIndex::create(exact_dir, cfg).unwrap();
+        for i in 0..n {
+            let v = vector(i, dim);
+            index
+                .insert(VectorId(i as u128 + 1), &v, Metadata::empty())
+                .unwrap();
+        }
+        Some(index)
+    } else {
+        None
+    };
     let mut latencies = Vec::with_capacity(queries);
     let mut recall_hits = 0usize;
     let mut recall_total = 0usize;
@@ -122,19 +140,8 @@ fn measure(dim: usize, n: usize, algorithm: Algorithm, queries: usize) -> Measur
         let start = Instant::now();
         let hits = reopened.search(&query, 10).unwrap();
         latencies.push(start.elapsed());
-        if algorithm == Algorithm::Hnsw {
-            let mut exact_cfg = IndexConfig::new(dim as u32, Metric::Cosine);
-            exact_cfg.algorithm = Algorithm::Exact;
-            let exact_dir_path = temp_dir("exact");
-            let exact_dir = exact_dir_path.as_path();
-            let exact = VectorIndex::create(exact_dir, exact_cfg).unwrap();
-            for i in 0..n {
-                let v = vector(i, dim);
-                exact
-                    .insert(VectorId(i as u128 + 1), &v, Metadata::empty())
-                    .unwrap();
-            }
-            let truth: std::collections::HashSet<_> = exact
+        if let Some(truth_index) = exact_for_truth.as_ref() {
+            let truth: std::collections::HashSet<_> = truth_index
                 .search(&query, 10)
                 .unwrap()
                 .into_iter()
@@ -145,6 +152,9 @@ fn measure(dim: usize, n: usize, algorithm: Algorithm, queries: usize) -> Measur
         }
     }
     let stats = reopened.stats().unwrap();
+    drop(reopened);
+    drop(exact_for_truth);
+    let _ = std::fs::remove_dir_all(&dir_path);
     Measurement {
         build_ms,
         open_ms,
