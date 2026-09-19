@@ -24,14 +24,9 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     let mut acc0 = 0.0f32;
     let mut acc1 = 0.0f32;
     while i + 8 <= n {
-        acc0 += a[i] * b[i]
-            + a[i + 1] * b[i + 1]
-            + a[i + 2] * b[i + 2]
-            + a[i + 3] * b[i + 3];
-        acc1 += a[i + 4] * b[i + 4]
-            + a[i + 5] * b[i + 5]
-            + a[i + 6] * b[i + 6]
-            + a[i + 7] * b[i + 7];
+        acc0 += a[i] * b[i] + a[i + 1] * b[i + 1] + a[i + 2] * b[i + 2] + a[i + 3] * b[i + 3];
+        acc1 +=
+            a[i + 4] * b[i + 4] + a[i + 5] * b[i + 5] + a[i + 6] * b[i + 6] + a[i + 7] * b[i + 7];
         i += 8;
     }
     acc += acc0 + acc1;
@@ -183,7 +178,9 @@ mod tests {
         let a = [1.0f32, 0.0];
         let near = [0.9f32, 0.1];
         let far = [0.0f32, 1.0];
-        assert!(graph_distance(Metric::Cosine, &a, &near) < graph_distance(Metric::Cosine, &a, &far));
+        assert!(
+            graph_distance(Metric::Cosine, &a, &near) < graph_distance(Metric::Cosine, &a, &far)
+        );
         assert!(graph_distance(Metric::Dot, &a, &near) < graph_distance(Metric::Dot, &a, &far));
         assert!(graph_distance(Metric::L2, &a, &near) < graph_distance(Metric::L2, &a, &far));
         // Score is the reverse ordering.

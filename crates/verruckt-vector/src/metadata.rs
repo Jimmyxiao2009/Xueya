@@ -87,7 +87,9 @@ fn field_matches(field: &MetadataField, value: &FilterValue, meta: &Metadata) ->
         (MetadataField::KnowledgePointId, FilterValue::Id(id)) => {
             meta.knowledge_point_id == Some(*id)
         }
-        (MetadataField::Kind, FilterValue::Kind(kind)) => meta.kind.as_deref() == Some(kind.as_str()),
+        (MetadataField::Kind, FilterValue::Kind(kind)) => {
+            meta.kind.as_deref() == Some(kind.as_str())
+        }
         _ => false,
     }
 }
@@ -144,7 +146,10 @@ impl MetadataFilter {
     }
 
     pub fn source_id_in<I: IntoIterator<Item = VectorId>>(self, ids: I) -> Self {
-        self.in_set(MetadataField::SourceId, ids.into_iter().map(FilterValue::Id))
+        self.in_set(
+            MetadataField::SourceId,
+            ids.into_iter().map(FilterValue::Id),
+        )
     }
 
     pub fn knowledge_point_id_eq(self, id: VectorId) -> Self {
@@ -163,7 +168,10 @@ impl MetadataFilter {
     }
 
     pub fn kind_in<I: IntoIterator<Item = String>>(self, kinds: I) -> Self {
-        self.in_set(MetadataField::Kind, kinds.into_iter().map(FilterValue::Kind))
+        self.in_set(
+            MetadataField::Kind,
+            kinds.into_iter().map(FilterValue::Kind),
+        )
     }
 
     /// Number of conjuncts.
@@ -177,9 +185,12 @@ impl MetadataFilter {
 
     /// Conjunction check.
     pub fn matches(&self, meta: &Metadata) -> bool {
-        self.predicates.iter().all(|predicate| predicate.matches(meta))
+        self.predicates
+            .iter()
+            .all(|predicate| predicate.matches(meta))
     }
 
+    #[allow(dead_code)] // kept for adapter use
     pub(crate) fn predicates(&self) -> &[Predicate] {
         &self.predicates
     }

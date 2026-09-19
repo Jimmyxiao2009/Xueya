@@ -30,20 +30,20 @@ tempfile = "3"
 # SQLite vector implementation (blob storage + in-memory brute force cosine).
 rusqlite = { version = "0.32", features = ["bundled"] }
 
-# [[bench]]
-# name = "engine"
-# harness = false
+[[bench]]
+name = "engine"
+harness = false
 
 # Full benchmark matrix runner; writes a Markdown report to stdout so that
 # docs/BENCHMARKS.md can be generated from real measurements.
-# [[bin]]
-# name = "verruckt-vector-report"
-# path = "src/bin/report.rs"
+[[bin]]
+name = "verruckt-vector-report"
+path = "src/bin/report.rs"
 
 # Child process used by crash-recovery integration tests (hard exits itself).
-# [[bin]]
-# name = "crash-child"
-# path = "src/bin/crash_child.rs"
+[[bin]]
+name = "crash-child"
+path = "src/bin/crash_child.rs"
 
 [profile.bench]
 debug = false
