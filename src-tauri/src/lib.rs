@@ -46,6 +46,7 @@ use ipc::{
         source_reindex, source_summarize,
     },
     tutor::{tutor_send, tutor_send_stream},
+    vector_diagnostics::vector_backend_info,
 };
 use services::ingestion_service::IngestionService;
 use sync::commands::{sync_conflicts, sync_files_now, sync_now, sync_status};
@@ -167,6 +168,7 @@ pub fn run() {
             search_web,
             knowledge_search,
             knowledge_retrieval_debug,
+            vector_backend_info,
             knowledge_get_object,
             knowledge_get_related,
             course_list,

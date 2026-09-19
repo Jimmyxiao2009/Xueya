@@ -68,6 +68,28 @@ pub trait VectorIndex: Send + Sync {
     }
 
     async fn rebuild(&self) -> Result<(), AppError>;
+
+    /// Make all accepted mutations durable. SQLite has no separate derived
+    /// checkpoint boundary, so its implementation is a no-op by default.
+    async fn flush(&self) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    /// Development diagnostics snapshot. The default is `None` (no stats
+    /// available); each backend reports what it can without I/O cost.
+    async fn info(&self) -> Option<VectorBackendStats> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VectorBackendStats {
+    pub algorithm: String,
+    pub vector_count: u64,
+    pub deleted_count: Option<u64>,
+    pub dimension: u32,
+    pub index_bytes: Option<u64>,
 }
 
 type EmbeddingCacheKey = (Uuid, Uuid, String);
@@ -228,5 +250,25 @@ impl VectorIndex for SqliteVectorIndex {
         }
         self.loaded.store(true, Ordering::Release);
         Ok(())
+    }
+
+    async fn info(&self) -> Option<VectorBackendStats> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM embeddings")
+            .fetch_one(&self.pool)
+            .await
+            .ok()?;
+        let dimension: Option<i64> =
+            sqlx::query_scalar("SELECT dimensions FROM embeddings LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten();
+        Some(VectorBackendStats {
+            algorithm: "exact".to_owned(),
+            vector_count: count.max(0) as u64,
+            deleted_count: None,
+            dimension: dimension.unwrap_or(0).max(0) as u32,
+            index_bytes: None,
+        })
     }
 }

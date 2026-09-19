@@ -135,6 +135,11 @@ impl<'a> IngestionService<'a> {
         chunk_repo::insert_chunks(&self.state.pool, &chunks).await?;
         self.index_knowledge_for_document(&source, &document, &chunks)
             .await?;
+        if let Some(handle) = handle {
+            handle.progress(0.55, "Embedding chunks").await?;
+        }
+        let chunk_ids: Vec<Uuid> = chunks.iter().map(|chunk| chunk.id).collect();
+        self.embed_chunks(&chunk_ids, handle).await?;
         source_repo::update_source_status(
             &self.state.pool,
             source_id,
@@ -142,12 +147,6 @@ impl<'a> IngestionService<'a> {
             Some(&content_hash),
         )
         .await?;
-
-        if let Some(handle) = handle {
-            handle.progress(0.55, "Embedding chunks").await?;
-        }
-        let chunk_ids: Vec<Uuid> = chunks.iter().map(|chunk| chunk.id).collect();
-        self.embed_chunks(&chunk_ids, handle).await?;
 
         source_repo::get_source(&self.state.pool, source_id).await
     }
@@ -308,14 +307,6 @@ impl<'a> IngestionService<'a> {
         )
         .await?;
 
-        for (chunk, vector) in chunks.iter().zip(final_vectors.iter()) {
-            self.state
-                .vector_index
-                .upsert(chunk.id, config.id, &config.embedding_model, vector)
-                .await?;
-        }
-
-        // 4. Record which sources are fully indexed under this embedding space.
         let mut document_source_ids = std::collections::HashMap::new();
         for chunk in &chunks {
             if let std::collections::hash_map::Entry::Vacant(entry) =
@@ -328,6 +319,52 @@ impl<'a> IngestionService<'a> {
                 }
             }
         }
+        for source_id in document_source_ids.values() {
+            crate::knowledge::embedding_cache::mark_source_index_indexing(
+                &self.state.pool,
+                *source_id,
+                config.id,
+                &config.embedding_model,
+                dimension,
+            )
+            .await?;
+        }
+
+        for (chunk, vector) in chunks.iter().zip(final_vectors.iter()) {
+            if let Err(error) = self
+                .state
+                .vector_index
+                .upsert(chunk.id, config.id, &config.embedding_model, vector)
+                .await
+            {
+                for source_id in document_source_ids.values() {
+                    let _ = crate::knowledge::embedding_cache::mark_source_index_failed(
+                        &self.state.pool,
+                        *source_id,
+                        config.id,
+                        &config.embedding_model,
+                        dimension,
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
+        }
+        if let Err(error) = self.state.vector_index.flush().await {
+            for source_id in document_source_ids.values() {
+                let _ = crate::knowledge::embedding_cache::mark_source_index_failed(
+                    &self.state.pool,
+                    *source_id,
+                    config.id,
+                    &config.embedding_model,
+                    dimension,
+                )
+                .await;
+            }
+            return Err(error);
+        }
+
+        // 4. Record which sources are fully indexed under this embedding space.
         for source_id in document_source_ids.values() {
             crate::knowledge::embedding_cache::mark_source_index_ready(
                 &self.state.pool,
