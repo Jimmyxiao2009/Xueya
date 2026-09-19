@@ -184,7 +184,11 @@ impl HnswGraph {
         if pos != links.len() {
             return Err(VectorError::corrupt(
                 "graph",
-                format!("links length {} does not match node levels ({})", links.len(), pos),
+                format!(
+                    "links length {} does not match node levels ({})",
+                    links.len(),
+                    pos
+                ),
             ));
         }
         for &link in &links {
@@ -205,7 +209,10 @@ impl HnswGraph {
             if max_level != levels[entry as usize] {
                 return Err(VectorError::corrupt(
                     "graph",
-                    format!("max level {max_level} does not match entry level {}", levels[entry as usize]),
+                    format!(
+                        "max level {max_level} does not match entry level {}",
+                        levels[entry as usize]
+                    ),
                 ));
             }
         } else if max_level != 0 {
@@ -315,7 +322,10 @@ impl HnswGraph {
     /// Overwrite a node's links on a layer (remaining slots become SENTINEL).
     pub fn set_links(&mut self, node: u32, layer: u32, neighbors: &[u32]) {
         let links = self.layer_links_mut(node, layer);
-        debug_assert!(neighbors.len() <= links.len(), "too many links for slot block");
+        debug_assert!(
+            neighbors.len() <= links.len(),
+            "too many links for slot block"
+        );
         links.fill(SENTINEL);
         links[..neighbors.len()].copy_from_slice(neighbors);
     }
@@ -351,7 +361,11 @@ pub(crate) struct SearchCtx<'a> {
 impl SearchCtx<'_> {
     #[inline]
     fn dist(&self, node: u32) -> f32 {
-        graph_distance(self.metric, self.query, self.vectors.row(node as usize, self.dim))
+        graph_distance(
+            self.metric,
+            self.query,
+            self.vectors.row(node as usize, self.dim),
+        )
     }
 
     /// May this node enter a result set? (live + metadata filter)
@@ -423,9 +437,15 @@ pub(crate) fn search_layer(
                 Some(worst) => dist < worst.dist,
             };
             if results.len() < ef || better {
-                candidates.push(Reverse(DistNode { dist, node: neighbor }));
+                candidates.push(Reverse(DistNode {
+                    dist,
+                    node: neighbor,
+                }));
                 if ctx.passes(neighbor) {
-                    results.push(DistNode { dist, node: neighbor });
+                    results.push(DistNode {
+                        dist,
+                        node: neighbor,
+                    });
                     if results.len() > ef {
                         results.pop();
                     }
@@ -662,7 +682,9 @@ mod tests {
             query,
             filter: None,
         };
-        graph_search(&ctx, graph, 1, 32, None).first().map(|h| h.node)
+        graph_search(&ctx, graph, 1, 32, None)
+            .first()
+            .map(|h| h.node)
     }
 
     #[test]
@@ -709,8 +731,14 @@ mod tests {
         let (_, graph) = build_test_graph(10, 4, 3);
         let mut links = graph.links().to_vec();
         links[0] = 999; // out of range
-        let err = HnswGraph::from_parts(graph.m(), graph.levels().to_vec(), links, graph.entry(), graph.max_level())
-            .unwrap_err();
+        let err = HnswGraph::from_parts(
+            graph.m(),
+            graph.levels().to_vec(),
+            links,
+            graph.entry(),
+            graph.max_level(),
+        )
+        .unwrap_err();
         assert!(matches!(err, VectorError::CorruptIndex { .. }));
     }
 }

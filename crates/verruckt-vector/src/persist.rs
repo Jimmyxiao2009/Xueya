@@ -256,7 +256,10 @@ impl Manifest {
     /// actually on disk. Called on open, before anything is trusted.
     pub(crate) fn verify_checksums(&self, dir: &Path) -> Result<()> {
         let checks = [
-            (segment_file("vectors", self.generation), self.vectors_checksum),
+            (
+                segment_file("vectors", self.generation),
+                self.vectors_checksum,
+            ),
             (segment_file("graph", self.generation), self.graph_checksum),
             (segment_file("ids", self.generation), self.ids_checksum),
             (segment_file("meta", self.generation), self.meta_checksum),
@@ -374,10 +377,7 @@ pub(crate) fn encode_meta(rows: &Rows) -> Vec<u8> {
     frame::encode(&META_MAGIC, frame::FORMAT_VERSION, &w.into_bytes())
 }
 
-pub(crate) fn decode_meta(
-    data: &[u8],
-    expected_rows: usize,
-) -> Result<(Vec<Metadata>, Vec<bool>)> {
+pub(crate) fn decode_meta(data: &[u8], expected_rows: usize) -> Result<(Vec<Metadata>, Vec<bool>)> {
     let payload = frame::decode_v1(&META_MAGIC, "meta", data)?;
     let mut r = Reader::new(payload, "meta");
     let mut meta = Vec::with_capacity(expected_rows);
@@ -395,9 +395,21 @@ pub(crate) fn decode_meta(
                 format!("reserved flag bits set: {flags:#x}"),
             ));
         }
-        let route_id = if flags & 1 != 0 { Some(read_id(&mut r)?) } else { None };
-        let source_id = if flags & 2 != 0 { Some(read_id(&mut r)?) } else { None };
-        let knowledge_point_id = if flags & 4 != 0 { Some(read_id(&mut r)?) } else { None };
+        let route_id = if flags & 1 != 0 {
+            Some(read_id(&mut r)?)
+        } else {
+            None
+        };
+        let source_id = if flags & 2 != 0 {
+            Some(read_id(&mut r)?)
+        } else {
+            None
+        };
+        let knowledge_point_id = if flags & 4 != 0 {
+            Some(read_id(&mut r)?)
+        } else {
+            None
+        };
         let kind = if flags & 8 != 0 {
             let kind = r.short_str()?;
             if kind.len() > MAX_KIND_LEN {
@@ -641,9 +653,11 @@ pub(crate) fn load_segments(
         })?,
         row_count,
     )?;
-    let graph = decode_graph(&std::fs::read(dir.join(segment_file("graph", gen))).map_err(
-        |error| VectorError::corrupt("graph", format!("cannot read graph segment: {error}")),
-    )?)?;
+    let graph = decode_graph(
+        &std::fs::read(dir.join(segment_file("graph", gen))).map_err(|error| {
+            VectorError::corrupt("graph", format!("cannot read graph segment: {error}"))
+        })?,
+    )?;
     if graph.node_count() as usize != row_count {
         return Err(VectorError::corrupt(
             "graph",

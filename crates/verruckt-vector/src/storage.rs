@@ -24,7 +24,9 @@ use std::collections::HashMap;
 
 /// Raw vector matrix, append-only.
 pub(crate) enum VectorData {
-    Heap { data: Vec<f32> },
+    Heap {
+        data: Vec<f32>,
+    },
     Mmap {
         map: Mmap,
         /// Byte range of the frame payload inside `map`.
@@ -90,11 +92,7 @@ impl VectorData {
 
     /// Stream every row to `out` as little-endian f32 bytes, updating the
     /// running checksum. Used by checkpointing.
-    pub fn write_le<W: std::io::Write>(
-        &self,
-        dim: usize,
-        out: &mut W,
-    ) -> std::io::Result<()> {
+    pub fn write_le<W: std::io::Write>(&self, dim: usize, out: &mut W) -> std::io::Result<()> {
         const CHUNK: usize = 4096;
         match self {
             VectorData::Heap { data } => {
