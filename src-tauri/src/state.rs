@@ -142,7 +142,12 @@ impl AppState {
         };
         if let Err(error) = vector_index.rebuild().await {
             if backend == VectorBackend::Verruckt {
-                tracing::warn!(%error, "verruckt vector index rebuild failed; retrying from SQLite on demand");
+                tracing::warn!(%error, "verruckt vector index rebuild failed; marking source indexes for reindex");
+                let _ = sqlx::query(
+                    "UPDATE source_index_state SET status = 'needs_reindex' WHERE status != 'needs_reindex'",
+                )
+                .execute(&pool)
+                .await;
             } else {
                 return Err(error);
             }
