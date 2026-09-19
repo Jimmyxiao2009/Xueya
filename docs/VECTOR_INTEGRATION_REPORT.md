@@ -156,10 +156,17 @@ dimension and index size through the trait's `info()` seam.
 - HNSW at ≥50k needs retuned parameters (higher `M`/`efConstruction`, corpus-
   dependent `efSearch`) before its latency advantage is usable; on cluster-
   structured real corpora recall will differ from uniform random vectors.
-- Desktop app smoke was validated through the full Rust integration suite
-  (which exercises the real ingestion → retrieval → tutor → citation services
-  against temp AppData profiles); a manual `npm run tauri dev` session was not
-  performed in this environment.
+- **Release smoke (real desktop exe):** `npm run tauri build -- --no-bundle`
+  succeeded; the release `verruckt.exe` was launched with
+  `VERRUCKT_VECTOR_BACKEND=verruckt`. First launch created the correct
+  AppData index (`%APPDATA%/app.verruckt.desktop/vector/<sha256-space-id>/`
+  with a checkpointed manifest) via the demo seed's real ingestion →
+  embedding → Verruckt index → flush pipeline. Relaunch verified the index
+  is **reused, not rebuilt** (manifest hash identical before/after reopen).
+- Startup *verifies* valid derived indexes (fast open + live-count check
+  against SQLite) and rebuilds only missing/corrupt/stale spaces; full
+  chunk-ID reconciliation of a reused index is future work (the live-count
+  check is a heuristic).
 
 ## Recommendation
 
