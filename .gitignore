@@ -5,3 +5,6 @@ src-tauri/target/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.jks
+*.keystore
+keystore.properties
