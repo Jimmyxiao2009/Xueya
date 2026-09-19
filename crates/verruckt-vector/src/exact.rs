@@ -46,12 +46,12 @@ pub(crate) fn exact_search(
 ) -> Vec<Scored> {
     let meta: &[Metadata] = &rows.meta;
     let mut heap: BinaryHeap<Scored> = BinaryHeap::with_capacity(k.min(64));
-    for row in 0..rows.row_count() {
-        if !rows.alive[row] {
+    for (row, (alive, metadata)) in rows.alive.iter().zip(meta.iter()).enumerate() {
+        if !alive {
             continue;
         }
         if let Some(filter) = filter {
-            if !filter.matches(&meta[row]) {
+            if !filter.matches(metadata) {
                 continue;
             }
         }
@@ -63,9 +63,10 @@ pub(crate) fn exact_search(
         if heap.len() < k {
             heap.push(hit);
         } else if let Some(worst) = heap.peek() {
-            // `Scored`'s max-heap order is "best on top", so the root is the
-            // worst-scoring entry of the top-k.
-            if worst.cmp(&hit) == Ordering::Less {
+            // `Scored`'s max-heap order is "worst on top", so replace the
+            // root only when the new hit is strictly better (smaller in the
+            // reversed `Ord` ordering).
+            if hit.cmp(worst) == Ordering::Less {
                 heap.pop();
                 heap.push(hit);
             }

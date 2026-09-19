@@ -19,10 +19,10 @@
 //! a gap or regression aborts the replay (the log was damaged).
 
 use crate::codec::{frame, Reader, Writer};
-use crate::persist::WAL_MAGIC;
 use crate::error::{Result, VectorError};
 use crate::id::VectorId;
 use crate::metadata::Metadata;
+use crate::persist::WAL_MAGIC;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -126,10 +126,7 @@ impl WalRecord {
                 }
                 Ok(WalRecord::Delete { seq, id })
             }
-            other => Err(VectorError::corrupt(
-                "wal",
-                format!("unknown op {other}"),
-            )),
+            other => Err(VectorError::corrupt("wal", format!("unknown op {other}"))),
         }
     }
 }
@@ -171,7 +168,11 @@ fn decode_metadata(r: &mut Reader<'_>) -> Result<Metadata> {
     let route_id = if flags & 1 != 0 { read_field(r)? } else { None };
     let source_id = if flags & 2 != 0 { read_field(r)? } else { None };
     let knowledge_point_id = if flags & 4 != 0 { read_field(r)? } else { None };
-    let kind = if flags & 8 != 0 { Some(r.short_str()?) } else { None };
+    let kind = if flags & 8 != 0 {
+        Some(r.short_str()?)
+    } else {
+        None
+    };
     Ok(Metadata {
         route_id,
         source_id,
@@ -192,10 +193,7 @@ pub(crate) struct WalWriter {
 impl WalWriter {
     pub fn create(dir: &Path) -> Result<WalWriter> {
         let path = dir.join("wal.log");
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(WalWriter {
             file,
             path,
@@ -206,11 +204,8 @@ impl WalWriter {
     /// Append one record. `fsync` controls durability of this single append
     /// (the engine fsyncs on flush/checkpoint regardless).
     pub fn append(&mut self, record: &WalRecord, fsync: bool) -> Result<()> {
-        let frame_bytes = frame::encode(
-            &WAL_MAGIC,
-            frame::FORMAT_VERSION,
-            &record.encode_payload(),
-        );
+        let frame_bytes =
+            frame::encode(&WAL_MAGIC, frame::FORMAT_VERSION, &record.encode_payload());
         self.file.write_all(&frame_bytes)?;
         if fsync {
             self.file.sync_all()?;
@@ -245,6 +240,8 @@ impl WalWriter {
 #[derive(Debug, Default)]
 pub(crate) struct WalReplay {
     pub records: Vec<WalRecord>,
+    /// Byte offset of the valid prefix; used to truncate a torn tail.
+    #[allow(dead_code)]
     pub valid_bytes: u64,
     /// Byte offset where a torn (checksum-failed) trailing frame began.
     pub torn_at: Option<u64>,
@@ -308,23 +305,16 @@ fn try_parse_frame(bytes: &[u8]) -> Result<Option<(&[u8], usize)>> {
     if bytes.len() < frame::HEADER_LEN {
         return Ok(None);
     }
-    if &bytes[0..4] != WAL_MAGIC {
+    if bytes[0..4] != WAL_MAGIC {
         return Ok(None);
     }
-    let payload_len = u64::from_le_bytes(
-        bytes[8..16]
-            .try_into()
-            .expect("length checked above"),
-    ) as usize;
+    let payload_len =
+        u64::from_le_bytes(bytes[8..16].try_into().expect("length checked above")) as usize;
     let frame_len = frame::HEADER_LEN + payload_len + frame::TRAILER_LEN;
     if bytes.len() < frame_len {
         return Ok(None);
     }
-    let (version, payload) = frame::decode(
-        &WAL_MAGIC,
-        "wal",
-        &bytes[..frame_len],
-    )?;
+    let (version, payload) = frame::decode(&WAL_MAGIC, "wal", &bytes[..frame_len])?;
     if version != frame::FORMAT_VERSION {
         return Err(VectorError::UnsupportedVersion {
             found: version,
@@ -362,7 +352,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut wal = WalWriter::create(dir.path()).unwrap();
         wal.append(&insert_record(1, 100, 3), false).unwrap();
-        wal.append(&WalRecord::Delete { seq: 2, id: VectorId(100) }, false).unwrap();
+        wal.append(
+            &WalRecord::Delete {
+                seq: 2,
+                id: VectorId(100),
+            },
+            false,
+        )
+        .unwrap();
         wal.append(&insert_record(3, 101, 3), false).unwrap();
         wal.sync().unwrap();
         drop(wal);

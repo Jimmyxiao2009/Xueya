@@ -23,8 +23,8 @@ use crate::hnsw::{self, graph_insert, graph_search, SearchCtx};
 use crate::id::VectorId;
 use crate::metadata::{Metadata, MetadataFilter};
 use crate::persist::{
-    self, cleanup_stale_segments, config_from_manifest, directory_size, load_segments, manifest_path,
-    wal_path, Manifest,
+    self, cleanup_stale_segments, config_from_manifest, directory_size, load_segments,
+    manifest_path, wal_path, Manifest,
 };
 use crate::storage::{Rows, VectorData};
 use crate::wal::{replay_wal, truncate_to, WalRecord, WalWriter};
@@ -116,7 +116,8 @@ impl Inner {
     fn checkpoint_locked(&mut self) -> Result<()> {
         let generation = self.generation + 1;
         let dim = self.dim();
-        let checksums = persist::write_segments(&self.dir, generation, &self.rows, &self.graph, dim)?;
+        let checksums =
+            persist::write_segments(&self.dir, generation, &self.rows, &self.graph, dim)?;
 
         let manifest = Manifest {
             format_version: crate::codec::frame::FORMAT_VERSION,
@@ -215,11 +216,10 @@ impl VectorIndex {
     /// Open an existing index: load the checkpointed generation, verify all
     /// segment checksums, then replay the WAL on top.
     pub fn open(path: &Path) -> Result<VectorIndex> {
-        let manifest_bytes = std::fs::read(manifest_path(path)).map_err(|_| {
-            VectorError::IndexNotFound {
+        let manifest_bytes =
+            std::fs::read(manifest_path(path)).map_err(|_| VectorError::IndexNotFound {
                 path: path.display().to_string(),
-            }
-        })?;
+            })?;
         let manifest = Manifest::decode(&manifest_bytes)?;
         manifest.verify_checksums(path)?;
 
@@ -245,14 +245,7 @@ impl VectorIndex {
                     metadata,
                 } => {
                     let row = rows.insert(*id, vector, metadata.clone());
-                    insert_into_graph(
-                        &mut graph,
-                        &rows,
-                        row,
-                        *seq,
-                        &config,
-                        dim,
-                    );
+                    insert_into_graph(&mut graph, &rows, row, *seq, &config, dim);
                     max_seq = (*seq).max(max_seq);
                     next_seq = (*seq) + 1;
                 }
@@ -309,12 +302,7 @@ impl VectorIndex {
 
     /// Insert one vector (upsert: an existing live row with the same id is
     /// tombstoned and re-inserted).
-    pub fn insert(
-        &self,
-        id: VectorId,
-        vector: &[f32],
-        metadata: Metadata,
-    ) -> Result<()> {
+    pub fn insert(&self, id: VectorId, vector: &[f32], metadata: Metadata) -> Result<()> {
         self.insert_batch(std::iter::once((id, vector, metadata)))
     }
 
@@ -332,10 +320,7 @@ impl VectorIndex {
         }
         let dim = inner.dim();
         let sync = false; // flush()/checkpoint fsync
-        let threshold = inner
-            .config
-            .persistence
-            .wal_auto_checkpoint_bytes;
+        let threshold = inner.config.persistence.wal_auto_checkpoint_bytes;
 
         let mut pending: Vec<(VectorId, Vec<f32>, Metadata)> = Vec::new();
         for (id, vector, metadata) in batch {
@@ -378,9 +363,7 @@ impl VectorIndex {
             return Ok(());
         }
         let seq = inner.next_seq.fetch_add(1, Ordering::AcqRel);
-        inner
-            .wal
-            .append(&WalRecord::Delete { seq, id }, false)?;
+        inner.wal.append(&WalRecord::Delete { seq, id }, false)?;
         if let Some(&row) = inner.rows.idmap.get(&id) {
             inner.rows.tombstone(row);
         }
@@ -439,14 +422,15 @@ impl VectorIndex {
             .collect())
     }
 
-    /// Fsync the WAL. After this returns, every completed mutation is durable.
+    /// Full durable flush: rewrite all segments at a new generation, commit
+    /// by manifest rename, fsync the WAL boundary, and rotate the WAL.
     pub fn flush(&self) -> Result<()> {
         let _guard = self.write_lock.lock();
         let mut inner = self.inner.write();
         if inner.closed.load(Ordering::Acquire) {
             return Err(VectorError::IndexClosed);
         }
-        inner.wal.sync()
+        inner.checkpoint_locked()
     }
 
     /// Full checkpoint: rewrite all segments at a new generation and commit
@@ -658,7 +642,6 @@ fn now_unix() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metadata::MetadataField;
 
     fn test_config(dim: u32) -> IndexConfig {
         IndexConfig::new(dim, Metric::Cosine)
@@ -679,9 +662,7 @@ mod tests {
         let index = VectorIndex::create(dir.path(), test_config(8)).unwrap();
         let ids: Vec<VectorId> = (0..10).map(|i| VectorId(i as u128 + 1)).collect();
         for (i, id) in ids.iter().enumerate() {
-            index
-                .insert(*id, &vec_of(i as usize, 8), Metadata::empty())
-                .unwrap();
+            index.insert(*id, &vec_of(i, 8), Metadata::empty()).unwrap();
         }
         index.flush().unwrap();
 
@@ -904,21 +885,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let index = VectorIndex::create(dir.path(), test_config(4)).unwrap();
         index
-            .insert(
-                VectorId(1),
-                &vec_of(1, 4),
-                Metadata::with_kind("chunk"),
-            )
+            .insert(VectorId(1), &vec_of(1, 4), Metadata::with_kind("chunk"))
             .unwrap();
         index
-            .insert(
-                VectorId(2),
-                &vec_of(1, 4),
-                Metadata::with_kind("summary"),
-            )
+            .insert(VectorId(2), &vec_of(1, 4), Metadata::with_kind("summary"))
             .unwrap();
         let filter = MetadataFilter::new().kind_eq("chunk");
-        let hits = index.search_filtered(&vec_of(1, 4), 2, Some(&filter)).unwrap();
+        let hits = index
+            .search_filtered(&vec_of(1, 4), 2, Some(&filter))
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, VectorId(1));
     }

@@ -204,10 +204,7 @@ impl<'a> Reader<'a> {
         if bytes != expected {
             return Err(VectorError::corrupt(
                 self.file,
-                format!(
-                    "bad magic {:02x?}, expected {:02x?}",
-                    bytes, expected
-                ),
+                format!("bad magic {:02x?}, expected {:02x?}", bytes, expected),
             ));
         }
         Ok(())
@@ -285,11 +282,7 @@ pub mod frame {
 
     /// [`decode`] plus the format-version gate: any version other than
     /// [`FORMAT_VERSION`] is reported as `UnsupportedVersion`, never guessed.
-    pub fn decode_v1<'a>(
-        magic: &[u8; 4],
-        file: &'static str,
-        data: &'a [u8],
-    ) -> Result<&'a [u8]> {
+    pub fn decode_v1<'a>(magic: &[u8; 4], file: &'static str, data: &'a [u8]) -> Result<&'a [u8]> {
         let (version, payload) = decode(magic, file, data)?;
         if version != FORMAT_VERSION {
             return Err(VectorError::UnsupportedVersion {
@@ -350,33 +343,33 @@ pub mod frame {
             Ok(())
         }
 
-    /// Finish the file: trailer, fsync, atomic rename. Returns the frame
-    /// checksum (recorded in the manifest and verified on open).
-    pub fn finish(self) -> Result<u64> {
-        let mut file = self.file;
-        let checksum = self.hasher.finish();
-        file.write_all(&checksum.to_le_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        let tmp = self.dir.join(format!("{}.tmp", self.name));
-        let final_path = self.dir.join(&self.name);
-        std::fs::rename(&tmp, &final_path)?;
-        super::fsync_dir(&self.dir)?;
-        Ok(checksum)
-    }
-}
-
-impl std::io::Write for StreamWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.file.write_all(buf)?;
-        self.hasher.update(buf);
-        Ok(buf.len())
+        /// Finish the file: trailer, fsync, atomic rename. Returns the frame
+        /// checksum (recorded in the manifest and verified on open).
+        pub fn finish(self) -> Result<u64> {
+            let mut file = self.file;
+            let checksum = self.hasher.finish();
+            file.write_all(&checksum.to_le_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            let tmp = self.dir.join(format!("{}.tmp", self.name));
+            let final_path = self.dir.join(&self.name);
+            std::fs::rename(&tmp, &final_path)?;
+            super::fsync_dir(&self.dir)?;
+            Ok(checksum)
+        }
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.file.flush()
+    impl std::io::Write for StreamWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.file.write_all(buf)?;
+            self.hasher.update(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.file.flush()
+        }
     }
-}
 }
 
 /// Best-effort directory fsync.
@@ -403,11 +396,7 @@ pub fn fsync_dir(path: &std::path::Path) -> std::io::Result<()> {
 }
 
 /// Write a file atomically: write to `name.tmp`, fsync, rename over `name`.
-pub fn atomic_write(
-    dir: &std::path::Path,
-    name: &str,
-    contents: &[u8],
-) -> Result<()> {
+pub fn atomic_write(dir: &std::path::Path, name: &str, contents: &[u8]) -> Result<()> {
     use std::io::Write;
 
     let final_path = dir.join(name);
