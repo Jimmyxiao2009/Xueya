@@ -135,7 +135,9 @@ impl SqliteBaseline {
             )
             .unwrap();
         }
-        let mut stmt = conn.prepare("SELECT vector FROM embeddings ORDER BY id").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT vector FROM embeddings ORDER BY id")
+            .unwrap();
         let rows: Vec<Vec<f32>> = stmt
             .query_map([], |row| {
                 let bytes: Vec<u8> = row.get(0)?;
@@ -174,9 +176,21 @@ fn engine_top_k(index: &VectorIndex, query: &[f32], k: usize) -> Vec<usize> {
 
 fn metrics(name: &str, top_lists: &[Vec<usize>]) {
     let total = QUERIES.len();
-    let top1 = top_lists.iter().enumerate().filter(|(q, l)| l[0] == QUERIES[*q].1).count();
-    let recall5 = top_lists.iter().enumerate().filter(|(q, l)| l[..5.min(l.len())].contains(&QUERIES[*q].1)).count();
-    let recall10 = top_lists.iter().enumerate().filter(|(q, l)| l[..10.min(l.len())].contains(&QUERIES[*q].1)).count();
+    let top1 = top_lists
+        .iter()
+        .enumerate()
+        .filter(|(q, l)| l[0] == QUERIES[*q].1)
+        .count();
+    let recall5 = top_lists
+        .iter()
+        .enumerate()
+        .filter(|(q, l)| l[..5.min(l.len())].contains(&QUERIES[*q].1))
+        .count();
+    let recall10 = top_lists
+        .iter()
+        .enumerate()
+        .filter(|(q, l)| l[..10.min(l.len())].contains(&QUERIES[*q].1))
+        .count();
     println!(
         "| {name} | {:.3} | {:.3} | {:.3} |",
         top1 as f64 / total as f64,
@@ -221,7 +235,11 @@ fn real_corpus_rag_regression_across_backends() {
     }
 
     println!();
-    println!("Real-corpus RAG regression ({} queries, {} chunks, dim {DIM}):", QUERIES.len(), CORPUS.len());
+    println!(
+        "Real-corpus RAG regression ({} queries, {} chunks, dim {DIM}):",
+        QUERIES.len(),
+        CORPUS.len()
+    );
     println!("| backend | Top1 | Recall@5 | Recall@10 |");
     println!("|---|---|---|---|");
     metrics("SQLite blob + brute force", &sqlite_lists);
@@ -230,8 +248,16 @@ fn real_corpus_rag_regression_across_backends() {
 
     // Sanity gates: the deterministic corpus must be retrievable by all
     // backends; HNSW must stay within one hit of Exact on recall@5.
-    for (backend, lists) in [("sqlite", &sqlite_lists), ("exact", &exact_lists), ("hnsw", &hnsw_lists)] {
-        let recall5 = lists.iter().enumerate().filter(|(q, l)| l[..5.min(l.len())].contains(&QUERIES[*q].1)).count();
+    for (backend, lists) in [
+        ("sqlite", &sqlite_lists),
+        ("exact", &exact_lists),
+        ("hnsw", &hnsw_lists),
+    ] {
+        let recall5 = lists
+            .iter()
+            .enumerate()
+            .filter(|(q, l)| l[..5.min(l.len())].contains(&QUERIES[*q].1))
+            .count();
         assert!(
             recall5 as f64 / QUERIES.len() as f64 >= 0.9,
             "{backend} recall@5 below 0.9 on the real corpus"
