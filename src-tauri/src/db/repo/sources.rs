@@ -64,10 +64,43 @@ pub async fn get_source(pool: &SqlitePool, id: Uuid) -> Result<Source, AppError>
 }
 
 pub async fn delete_source(pool: &SqlitePool, id: Uuid) -> Result<(), AppError> {
+    // Delete derived rows explicitly before the source row. Besides making
+    // the authoritative delete independent from SQLite's cascade ordering,
+    // this lets the FTS5 delete trigger see each chunk's original text.
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM source_index_state WHERE source_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| AppError::Database(format!("delete source index state: {error}")))?;
+    sqlx::query("DELETE FROM embeddings WHERE chunk_id IN (SELECT c.id FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.source_id = ?)")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| AppError::Database(format!("delete source embeddings: {error}")))?;
+    sqlx::query(
+        "DELETE FROM chunks WHERE document_id IN (SELECT id FROM documents WHERE source_id = ?)",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| AppError::Database(format!("delete source chunks: {error}")))?;
+    sqlx::query("DELETE FROM documents WHERE source_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| AppError::Database(format!("delete source documents: {error}")))?;
+    sqlx::query("DELETE FROM source_revisions WHERE source_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| AppError::Database(format!("delete source revisions: {error}")))?;
     sqlx::query("DELETE FROM sources WHERE id = ?")
         .bind(id)
-        .execute(pool)
-        .await?;
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| AppError::Database(format!("delete source row: {error}")))?;
+    tx.commit().await?;
     Ok(())
 }
 

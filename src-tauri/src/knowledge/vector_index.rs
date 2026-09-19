@@ -68,6 +68,12 @@ pub trait VectorIndex: Send + Sync {
     }
 
     async fn rebuild(&self) -> Result<(), AppError>;
+
+    /// Make all accepted mutations durable. SQLite has no separate derived
+    /// checkpoint boundary, so its implementation is a no-op by default.
+    async fn flush(&self) -> Result<(), AppError> {
+        Ok(())
+    }
 }
 
 type EmbeddingCacheKey = (Uuid, Uuid, String);

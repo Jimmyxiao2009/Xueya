@@ -4,6 +4,7 @@ use crate::db::migrate;
 use crate::error::AppError;
 use crate::jobs::manager::JobManager;
 use crate::knowledge::vector_index::{SqliteVectorIndex, VectorIndex};
+use crate::knowledge::verruckt_vector::VerrucktVectorStoreAdapter;
 use crate::knowledge_fs::blob_store::BlobStore;
 use crate::search::SearchProviderRegistry;
 use crate::secrets::keyring_store::{KeyringSecretStore, SecretStore};
@@ -38,6 +39,33 @@ impl AppPaths {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorBackend {
+    Sqlite,
+    Verruckt,
+}
+
+impl VectorBackend {
+    pub fn from_env() -> Self {
+        match std::env::var("VERRUCKT_VECTOR_BACKEND")
+            .ok()
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("verruckt") => Self::Verruckt,
+            Some("sqlite") | None => Self::Sqlite,
+            Some(value) => {
+                tracing::warn!(
+                    backend = value,
+                    "unknown vector backend; falling back to sqlite"
+                );
+                Self::Sqlite
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub pool: SqlitePool,
@@ -62,6 +90,14 @@ impl AppState {
     pub async fn new_with_secrets(
         paths: AppPaths,
         secrets: Arc<dyn SecretStore>,
+    ) -> Result<Self, AppError> {
+        Self::new_with_secrets_and_backend(paths, secrets, VectorBackend::from_env()).await
+    }
+
+    pub async fn new_with_secrets_and_backend(
+        paths: AppPaths,
+        secrets: Arc<dyn SecretStore>,
+        backend: VectorBackend,
     ) -> Result<Self, AppError> {
         paths.ensure_dirs().await?;
 
@@ -98,8 +134,19 @@ impl AppState {
         let providers = ProviderRegistry::new(pool.clone(), http.clone(), secrets.clone())
             .with_cloud(cloud.clone());
         let search = SearchProviderRegistry::new(http.clone());
-        let vector_index: Arc<dyn VectorIndex> = Arc::new(SqliteVectorIndex::new(pool.clone()));
-        vector_index.rebuild().await?;
+        let vector_index: Arc<dyn VectorIndex> = match backend {
+            VectorBackend::Sqlite => Arc::new(SqliteVectorIndex::new(pool.clone())),
+            VectorBackend::Verruckt => Arc::new(
+                VerrucktVectorStoreAdapter::new(pool.clone(), paths.app_data_dir.clone()).await?,
+            ),
+        };
+        if let Err(error) = vector_index.rebuild().await {
+            if backend == VectorBackend::Verruckt {
+                tracing::warn!(%error, "verruckt vector index rebuild failed; retrying from SQLite on demand");
+            } else {
+                return Err(error);
+            }
+        }
         let jobs = JobManager::new(pool.clone());
         let blobs = BlobStore::new(paths.blobs_dir.clone());
         let files = Arc::new(CloudFileSyncService::new(

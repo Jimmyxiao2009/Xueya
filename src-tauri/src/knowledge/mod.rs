@@ -7,3 +7,4 @@ pub mod hybrid;
 pub mod rerank;
 pub mod retrieval;
 pub mod vector_index;
+pub mod verruckt_vector;

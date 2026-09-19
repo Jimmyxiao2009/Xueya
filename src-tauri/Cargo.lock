@@ -2664,6 +2664,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "memmap2"
+version = "0.9.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "memoffset"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5671,6 +5680,7 @@ dependencies = [
  "futures-util",
  "hex",
  "keyring",
+ "parking_lot",
  "pdf-extract",
  "quick-xml 0.37.5",
  "regex",
@@ -5690,7 +5700,21 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "verruckt-vector",
  "zip",
+]
+
+[[package]]
+name = "verruckt-vector"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "memmap2",
+ "parking_lot",
+ "rand 0.8.8",
+ "rand_chacha",
+ "thiserror 2.0.20",
+ "uuid",
 ]
 
 [[package]]

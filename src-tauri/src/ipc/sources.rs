@@ -140,7 +140,7 @@ async fn record_source_result(
 
 #[tauri::command]
 pub async fn source_delete(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
-    source_service::delete_source(&state.pool, id).await
+    source_service::delete_source(state.inner(), id).await
 }
 
 #[tauri::command]

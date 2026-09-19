@@ -117,6 +117,30 @@ pub async fn upsert_index_metadata(
     Ok(())
 }
 
+pub async fn mark_source_index_status(
+    pool: &SqlitePool,
+    source_id: Uuid,
+    provider_id: Uuid,
+    model: &str,
+    dimension: usize,
+    status: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO source_index_state (source_id, provider_id, model, dimension, status, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(source_id, provider_id, model) DO UPDATE SET \
+         dimension = excluded.dimension, status = excluded.status, updated_at = excluded.updated_at",
+    )
+    .bind(source_id)
+    .bind(provider_id)
+    .bind(model)
+    .bind(dimension as i64)
+    .bind(status)
+    .bind(utc_now().to_rfc3339())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn mark_source_index_ready(
     pool: &SqlitePool,
     source_id: Uuid,
@@ -137,6 +161,44 @@ pub async fn mark_source_index_ready(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub async fn mark_source_index_indexing(
+    pool: &SqlitePool,
+    source_id: Uuid,
+    provider_id: Uuid,
+    model: &str,
+    dimension: usize,
+) -> Result<(), AppError> {
+    mark_source_index_status(pool, source_id, provider_id, model, dimension, "indexing").await
+}
+
+pub async fn mark_source_index_failed(
+    pool: &SqlitePool,
+    source_id: Uuid,
+    provider_id: Uuid,
+    model: &str,
+    dimension: usize,
+) -> Result<(), AppError> {
+    mark_source_index_status(pool, source_id, provider_id, model, dimension, "failed").await
+}
+
+pub async fn mark_source_index_interrupted(
+    pool: &SqlitePool,
+    source_id: Uuid,
+    provider_id: Uuid,
+    model: &str,
+    dimension: usize,
+) -> Result<(), AppError> {
+    mark_source_index_status(
+        pool,
+        source_id,
+        provider_id,
+        model,
+        dimension,
+        "interrupted",
+    )
+    .await
 }
 
 pub async fn mark_source_index_needs_reindex(

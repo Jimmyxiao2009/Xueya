@@ -20,8 +20,21 @@ pub async fn get_source(pool: &SqlitePool, id: Uuid) -> Result<Source, AppError>
     source_repo::get_source(pool, id).await
 }
 
-pub async fn delete_source(pool: &SqlitePool, id: Uuid) -> Result<(), AppError> {
-    source_repo::delete_source(pool, id).await
+pub async fn delete_source(state: &AppState, id: Uuid) -> Result<(), AppError> {
+    let chunk_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT c.id FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.source_id = ?",
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await?;
+    for chunk_id in chunk_ids {
+        if let Err(error) = state.vector_index.delete(chunk_id).await {
+            tracing::warn!(%error, %chunk_id, "derived vector delete failed during source delete");
+        }
+    }
+    source_repo::delete_source(&state.pool, id)
+        .await
+        .map_err(|error| error.context("delete source authoritative row"))
 }
 
 #[derive(Debug, Clone)]
