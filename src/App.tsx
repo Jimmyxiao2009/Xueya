@@ -1,3 +1,4 @@
+import { NavigationAnchor } from "@/components/ui/NavigationAnchor";
 import {
   useCallback,
   useEffect,
@@ -13,7 +14,6 @@ import { flushSync } from "react-dom";
 import { watchJob } from "@/api";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { Toast } from "@/components/layout/Toast";
-import { Lighthouse } from "@/components/ui/Lighthouse";
 import { RoadmapLayer } from "@/components/roadmap/RoadmapLayer";
 import { RoadmapScreen } from "@/components/roadmap/RoadmapScreen";
 import { NoticeBanner } from "@/components/roadmap/NoticeBanner";
@@ -72,6 +72,7 @@ export default function App() {
   const setActiveNode = useNavStore((state) => state.setActiveNode);
 
   const routes = useRouteStore((state) => state.routes);
+  const routeError = useRouteStore((state) => state.error);
   const activeRouteId = useRouteStore((state) => state.activeRouteId);
   const details = useRouteStore((state) => state.details);
   const scrollPositions = useRouteStore((state) => state.scrollPositions);
@@ -105,10 +106,10 @@ export default function App() {
   const lessonScrollRef = useRef(0);
   const scrollRef = useRef(0);
   const pendingRef = useRef<PendingTransition | null>(null);
-  const bootedRef = useRef(false);
   const animatedRef = useRef(false);
 
   const [booted, setBooted] = useState(false);
+  const [bootTimedOut, setBootTimedOut] = useState(false);
   const [layerOpen, setLayerOpen] = useState(false);
   const [settled, setSettled] = useState(false);
   const [opening, setOpening] = useState(false);
@@ -120,6 +121,22 @@ export default function App() {
 
   const activeRoute = routes.find((route) => route.id === activeRouteId);
   const activeDetail = activeRouteId ? details[activeRouteId] : undefined;
+  useEffect(() => {
+    if (!activeRouteId || !activeDetail?.nodes.some((node) => {
+      try { return ["pending", "generating"].includes(JSON.parse(node.metadataJson || "{}").contentStatus); }
+      catch { return false; }
+    })) return;
+    // Poll only while independent node workers are still preparing content.
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      await loadDetail(activeRouteId);
+      if (!stopped) timer = setTimeout(refresh, 2500);
+    };
+    timer = setTimeout(refresh, 2500);
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [activeRouteId, activeDetail, loadDetail]);
+
   const activeNodes = activeDetail?.nodes ?? [];
   const activeIndex = activeNodes.findIndex((node) => node.id === activeNodeId);
   const activeNode = activeIndex >= 0 ? activeNodes[activeIndex] : undefined;
@@ -132,11 +149,22 @@ export default function App() {
   /* ---------------------------------------------------------------- bootstrap */
 
   useEffect(() => {
-    if (bootedRef.current) return;
-    bootedRef.current = true;
-    void Promise.all([loadRoutes(), loadSources(), refreshInfo()]).then(() =>
-      setBooted(true),
-    );
+    let disposed = false;
+    const timeout = window.setTimeout(() => {
+      if (disposed) return;
+      setBootTimedOut(true);
+      setBooted(true);
+    }, 10_000);
+    void Promise.allSettled([loadRoutes(), loadSources(), refreshInfo()]).then(() => {
+      window.clearTimeout(timeout);
+      if (disposed) return;
+      setBootTimedOut(false);
+      setBooted(true);
+    });
+    return () => {
+      disposed = true;
+      window.clearTimeout(timeout);
+    };
   }, [loadRoutes, loadSources, refreshInfo]);
 
   /* --------------------------------------------------------------- view layer */
@@ -562,15 +590,17 @@ export default function App() {
         .createRoute({ ...request, sourceIds });
       if (!jobId) {
         setCreating(false);
-        toast("无法创建这条路线");
+        toast(useRouteStore.getState().error ?? "无法创建这条路线");
         return;
       }
       await startJob(jobId);
       setCreating(false);
       setView("generating", 1);
-      const finished = await watchJob(jobId, (update) => applyJob(update));
-      if (finished.status !== "completed") {
-        toast("路线生成失败");
+      try {
+        const finished = await watchJob(jobId, (update) => applyJob(update));
+        if (finished.status !== "completed") toast("路线生成失败");
+      } catch {
+        useJobStore.getState().fail("暂时无法获取生成进度，后台任务可能仍在继续。返回路线后可刷新查看。");
       }
     },
     [applyJob, collectSources, creating, setView, startJob],
@@ -595,15 +625,15 @@ export default function App() {
 
   /* -------------------------------------------------------------------- views */
 
-  if (!booted || !activeRoute) {
+  if (!booted) {
     return (
       <div id="screen" ref={screenRef}>
         <main className="generation-page">
           <span className="generation-orbit">
-            <Lighthouse height={64} className="pulse" />
+            <NavigationAnchor size={24} />
           </span>
           <h1 className="page-title">正在打开学习空间</h1>
-          <p>Lighthouse 正在为你点亮第一段路…</p>
+          <p>正在准备你的学习空间…</p>
         </main>
         <Toast />
       </div>
@@ -612,9 +642,9 @@ export default function App() {
 
   const header = (
     <AppHeader
-      title={activeRoute.title}
+      title={activeRoute?.title ?? "学习空间"}
       onOpenLayer={() => setLayerOpen(true)}
-      titleKey={`${activeRoute.id}:${view}`}
+      titleKey={`${activeRoute?.id ?? "empty"}:${view}`}
       direction={headerDirection}
       reduced={reduced}
     />
@@ -625,7 +655,7 @@ export default function App() {
       {view === "home" ? (
         <>
           {header}
-          <RoadmapScreen
+          {activeRoute ? <RoadmapScreen
             route={activeRoute}
             detail={activeDetail}
             scrollRef={homeScrollRef}
@@ -634,7 +664,23 @@ export default function App() {
             onScroll={(top) => {
               scrollRef.current = top;
             }}
-          />
+          /> : (
+            <main className="generation-page">
+              <NavigationAnchor size={24} />
+              <h1 className="page-title">从第一条学习路线开始</h1>
+              {routeError || bootTimedOut ? (
+                <>
+                  <p role="alert">{bootTimedOut ? "读取学习空间超时，请重试。" : routeError}</p>
+                  <button onClick={() => window.location.reload()}>重新加载</button>
+                </>
+              ) : (
+                <>
+                  <p>添加资料，创建属于你的学习路线。</p>
+                  <button onClick={() => setView("create", 1)}>创建学习路线</button>
+                </>
+              )}
+            </main>
+          )}
           {showNotice && latestAdaptation ? (
             <NoticeBanner
               adaptation={latestAdaptation}
@@ -645,7 +691,7 @@ export default function App() {
         </>
       ) : null}
 
-      {view === "lesson" ? (
+      {view === "lesson" && activeRoute ? (
         <LessonScreen
           route={activeRoute}
           node={activeNode}
@@ -659,7 +705,7 @@ export default function App() {
         />
       ) : null}
 
-      {view === "learning" ? (
+      {view === "learning" && activeRoute ? (
         <LearningScreen
           route={activeRoute}
           node={activeNode}
@@ -689,6 +735,7 @@ export default function App() {
           onCancel={() => {
             resetJob();
             setView("home", -1);
+            void loadRoutes();
           }}
           onReady={generationReady}
         />

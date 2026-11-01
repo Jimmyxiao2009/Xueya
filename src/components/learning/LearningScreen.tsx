@@ -1,7 +1,7 @@
+import { NavigationAnchor } from "@/components/ui/NavigationAnchor";
 import { useEffect, useRef, useState } from "react";
 import type { LearningRoute, RouteNode, TutorCitation } from "@/api";
 import { Icon } from "@/components/ui/Icon";
-import { Lighthouse } from "@/components/ui/Lighthouse";
 import { SoftBlur } from "@/components/ui/SoftBlur";
 import { LearningPlan } from "@/components/learning/LearningPlan";
 import { QuizCard } from "@/components/learning/QuizCard";
@@ -83,7 +83,7 @@ function CitationChips({ citations }: { citations: TutorCitation[] }) {
 }
 
 /**
- * The conversation. Orbit asks, the learner answers, and the plan above lights
+ * The conversation. 学涯 asks, the learner answers, and the plan above lights
  * up one step at a time; a wrong answer never blocks the flow, it changes the
  * roadmap behind it instead.
  */
@@ -99,13 +99,14 @@ export function LearningScreen({
   const endRef = useRef<HTMLDivElement>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [finishing, setFinishing] = useState(false);
+  const [assessmentOpen, setAssessmentOpen] = useState(false);
 
   const question = currentQuestion(store);
   const completed = completedSteps(store);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [store.messages.length, store.complete, store.answered]);
+  }, [store.messages.length, store.readyToComplete, store.answered]);
 
   const submitChat = async () => {
     const text = chatDraft;
@@ -115,7 +116,7 @@ export function LearningScreen({
   };
 
   const finish = async () => {
-    if (finishing) return;
+    if (finishing || !store.readyToComplete) return;
     setFinishing(true);
     await store.finish();
     await onFinish();
@@ -140,7 +141,7 @@ export function LearningScreen({
           </button>
           <div className="chat-headinfo">
             <h2>{node?.title ?? route.title}</h2>
-            <span className="small">Lighthouse · 和你一起理解</span>
+            <span className="small">学涯 · 和你一起理解</span>
           </div>
           <button className="secondary" onClick={onHome}>
             <Icon name="nodes" /> 路线
@@ -156,15 +157,15 @@ export function LearningScreen({
           reduced={reduced}
         />
 
-        <div className="chat-body scroll-pane">
-          <div className="assistant-label">
-            <Lighthouse height={24} className="pulse" /> Lighthouse
-          </div>
-          <div className="message">
+          <div className="chat-body scroll-pane">
+            <div className="assistant-label">
+              <NavigationAnchor size={24} /> 学涯
+            </div>
             {store.lesson ? (
-              <>
+              <details className="lesson-brief">
+                <summary>直接给我讲</summary>
                 <p>{store.lesson.explanation}</p>
-                {store.lesson.keyPoints.slice(0, 2).map((point) => (
+                {store.lesson.keyPoints.map((point) => (
                   <p key={point}>{point}</p>
                 ))}
                 {store.lesson.citations.length ? (
@@ -173,12 +174,8 @@ export function LearningScreen({
                     {store.lesson.hasEvidence ? " · 已附引用" : ""}
                   </div>
                 ) : null}
-              </>
-            ) : (
-              <p>正在准备这一课…</p>
-            )}
-          </div>
-
+              </details>
+            ) : null}
           <div id="messages">
             {store.messages.map((message, index) => (
               <div
@@ -209,47 +206,72 @@ export function LearningScreen({
             ))}
           </div>
 
-          {store.complete ? (
+          {store.readyToComplete ? (
             <div className="completion">
               <h3>
-                <Icon name="check" /> 这一站，完成了。
+                <Icon name="check" /> 这一站，可以完成了。
               </h3>
-              <p>你已完成本课学习与作答。回到路线，看看下一站。</p>
-              <button
-                className="primary"
-                onClick={finish}
-                disabled={finishing}
-                data-motion="own"
-              >
-                回到我的路线 <Icon name="arrow" />
-              </button>
+              <p>你已经在对话中建立了理解。完成这一站，回到路线看看下一站。</p>
+              <div className="conversation-actions">
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={onBackToLesson}
+                >
+                  继续留在这一节
+                </button>
+                <button
+                  className="primary"
+                  onClick={finish}
+                  disabled={finishing}
+                  data-motion="own"
+                >
+                  完成这一站 <Icon name="arrow" />
+                </button>
+              </div>
             </div>
           ) : (
-            <>
-              <div className="assistant-label question-author">
-                <Icon name="spark" /> Lighthouse 向你提问
-              </div>
-              <div id="quiz">
-                {question ? (
-                  <QuizCard
-                    question={question}
-                    draft={store.draft}
-                    evaluation={store.evaluation}
-                    reviewing={store.reviewing}
-                    onSelect={store.selectOption}
-                    onText={store.setText}
-                    onPhoto={store.setPhoto}
-                    onSubmit={store.submit}
-                    onAdvance={store.advance}
-                    onReview={store.review}
-                    phase={phase}
-                  />
-                ) : (
-                  <div className="empty-note">这一课暂时没有理解检查。</div>
-                )}
-              </div>
-            </>
+            <div className="conversation-actions">
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => setAssessmentOpen((open) => !open)}
+              >
+                <Icon name="spark" /> {assessmentOpen ? "收起阶段检查" : "阶段检查"}
+              </button>
+              <button
+                className="secondary"
+                type="button"
+                onClick={onBackToLesson}
+              >
+                离开本次学习
+              </button>
+            </div>
           )}
+          {!store.readyToComplete && assessmentOpen ? (
+            <div id="quiz" className="assessment-panel">
+              <div className="assistant-label question-author">
+                <Icon name="spark" /> 阶段检查 · 可选
+              </div>
+              {question ? (
+                <QuizCard
+                  question={question}
+                  draft={store.draft}
+                  evaluation={store.evaluation}
+                  reviewing={store.reviewing}
+                  onSelect={store.selectOption}
+                  onText={store.setText}
+                  onPhoto={store.setPhoto}
+                  onSubmit={store.submit}
+                  onAdvance={store.advance}
+                  onReview={store.review}
+                  phase={phase}
+                />
+              ) : (
+                <div className="empty-note">这一课暂时没有理解检查。</div>
+              )}
+            </div>
+          ) : null}
           <div id="chat-end" ref={endRef} />
         </div>
       </main>

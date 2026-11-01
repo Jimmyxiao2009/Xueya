@@ -16,7 +16,7 @@ interface LearningPlanProps {
 
 /**
  * The serial plan above the conversation. It lights up step by step as the
- * learner answers, and collapses into a one-line "正在学 · …" summary.
+ * learner answers, and collapses into a one-line "正在理解 · …" summary.
  */
 export function LearningPlan({
   steps,
@@ -65,7 +65,7 @@ export function LearningPlan({
           <Icon name="nodes" /> 学习计划
         </span>
         <span className="plan-summary">
-          {completed} / {total} 已完成 <Icon name="chevron" />
+          已建立理解 {completed} · 继续 {Math.max(0, total - completed)} <Icon name="chevron" />
         </span>
       </button>
       {expanded ? (
@@ -90,7 +90,7 @@ export function LearningPlan({
                 </span>
                 <span className="plan-task">{step.title}</span>
                 <span className="plan-state">
-                  {done ? "已完成" : active ? "正在学" : "待学习"}
+                  {done ? "已建立理解" : active ? "正在理解" : "接下来"}
                 </span>
               </li>
             );
@@ -103,7 +103,7 @@ export function LearningPlan({
           ) : (
             <>
               <span className="plan-working" />
-              <span>正在学 · {steps[current]?.title ?? "这一课"}</span>
+              <span>正在理解 · {steps[current]?.title ?? "这一课"}</span>
             </>
           )}
         </div>

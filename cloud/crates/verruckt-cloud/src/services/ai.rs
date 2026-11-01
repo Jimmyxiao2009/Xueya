@@ -86,7 +86,7 @@ impl AiGateway {
         let max_tokens = body
             .get("max_tokens")
             .and_then(Value::as_u64)
-            .map(|value| value as u32)
+            .map(|value| value.min(self.config.max_tokens as u64) as u32)
             .unwrap_or(1024)
             .clamp(1, self.config.max_tokens);
         let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
@@ -186,7 +186,25 @@ impl AiGateway {
         upstream_model: &str,
         body: &Value,
     ) -> Result<reqwest::Response, ApiError> {
-        let mut upstream_body = body.clone();
+        let meta = self.validate_chat(body)?;
+        let mut object = serde_json::Map::new();
+        for key in [
+            "messages",
+            "temperature",
+            "top_p",
+            "stop",
+            "response_format",
+            "seed",
+            "reasoning_effort",
+        ] {
+            if let Some(value) = body.get(key) {
+                object.insert(key.into(), value.clone());
+            }
+        }
+        object.insert("max_tokens".into(), serde_json::json!(meta.max_tokens));
+        object.insert("n".into(), serde_json::json!(1));
+        object.insert("stream".into(), serde_json::json!(meta.stream));
+        let mut upstream_body = Value::Object(object);
         if let Value::Object(ref mut object) = upstream_body {
             object.insert("model".into(), Value::String(upstream_model.into()));
             if object
@@ -320,10 +338,15 @@ fn map_upstream_status(status: reqwest::StatusCode) -> ApiError {
 
 fn truncate(value: String, max: usize) -> String {
     if value.len() <= max {
-        value
-    } else {
-        format!("{}...", &value[..max])
+        return value;
     }
+    // Upstream error bodies are frequently UTF-8 (Chinese prompts/messages);
+    // byte slicing at an arbitrary offset would panic on a multi-byte char.
+    let mut end = max.min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &value[..end])
 }
 
 #[cfg(test)]

@@ -3,12 +3,14 @@ use super::dto::{
 };
 use crate::db::repo::learning_loop as loop_repo;
 use crate::error::AppError;
+use crate::ipc::{AppHandle, State};
 use crate::services::quiz_service::QuizService;
 use crate::state::AppState;
-use tauri::{AppHandle, Emitter, State};
+#[cfg(feature = "desktop")]
+use tauri::Emitter;
 use uuid::Uuid;
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn quiz_list(
     state: State<'_, AppState>,
     node_id: Uuid,
@@ -22,7 +24,7 @@ pub async fn quiz_list(
 /// Objective widgets are graded locally in Rust; subjective ones go to the
 /// tutor model and come back flagged `graded: false` when the offline stand-in
 /// answered, so the UI can label it honestly.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn quiz_submit(
     app: AppHandle,
     state: State<'_, AppState>,

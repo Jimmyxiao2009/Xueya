@@ -1,0 +1,28 @@
+name: Verify local-first product
+on: [push, pull_request]
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+  native-core:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --tests -j 2
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop
+  cloud:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo test --manifest-path cloud/Cargo.toml --workspace

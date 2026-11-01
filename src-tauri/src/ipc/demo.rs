@@ -1,11 +1,11 @@
 use crate::db::repo::courses as course_repo;
 use crate::domain::CourseNodeStatus;
 use crate::error::AppError;
+use crate::ipc::State;
 use crate::services::course_service::{CourseService, RouteRequest};
 use crate::services::ingestion_service::{IngestInput, IngestionService};
 use crate::state::AppState;
 use serde_json::json;
-use tauri::State;
 use uuid::Uuid;
 
 const DEMO_TOPIC: &str = "射影几何";
@@ -42,7 +42,7 @@ const HOMOGENEOUS_COORDINATES: &str = r#"# 齐次坐标
 /// only the route previously marked with the `competitionDemo` metadata flag,
 /// never ordinary learner routes. Sources are content-addressed and therefore
 /// reused rather than duplicated.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn competition_demo_seed(state: State<'_, AppState>) -> Result<Uuid, AppError> {
     seed_competition_demo(&state).await
 }
@@ -50,17 +50,21 @@ pub async fn competition_demo_seed(state: State<'_, AppState>) -> Result<Uuid, A
 /// Core seeding routine, kept out of the Tauri command wrapper so tests can
 /// exercise the same deterministic fixture path without constructing `State`.
 pub async fn seed_competition_demo(state: &AppState) -> Result<Uuid, AppError> {
-    if !(cfg!(debug_assertions) || std::env::var("VERRUCKT_COMPETITION_DEMO").is_ok()) {
+    if !(cfg!(debug_assertions) || std::env::var("VERRUCKT_COMPETITION_DEMO").as_deref() == Ok("1"))
+    {
         return Err(AppError::InvalidInput(
             "competition demo is disabled in this build".into(),
         ));
     }
 
     let courses = course_repo::list_courses(&state.pool).await?;
-    for course in courses
-        .into_iter()
-        .filter(|course| course.topic == DEMO_TOPIC && course.metadata_json.contains(DEMO_MARKER))
-    {
+    for course in courses.into_iter().filter(|course| {
+        course.topic == DEMO_TOPIC
+            && serde_json::from_str::<serde_json::Value>(&course.metadata_json)
+                .ok()
+                .and_then(|value| value.get(DEMO_MARKER).and_then(|v| v.as_bool()))
+                == Some(true)
+    }) {
         CourseService::new(state).delete_course(course.id).await?;
     }
 

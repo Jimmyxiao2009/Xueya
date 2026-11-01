@@ -259,7 +259,7 @@ impl CloudSession {
             return false;
         }
         match self.access_expires_at {
-            Some(expires_at) => expires_at > Utc::now() + chrono::Duration::seconds(30),
+            Some(expires_at) => expires_at > Utc::now() + chrono::Duration::seconds(60),
             None => false,
         }
     }

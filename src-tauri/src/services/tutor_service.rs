@@ -2,13 +2,18 @@ use crate::ai::prompts::{
     labeled_evidence, tutor_context_messages, tutor_stream_context_messages, LabeledEvidence,
     SUMMARY_SYSTEM, SUMMARY_V1, TUTOR_STREAM_V1, TUTOR_V1,
 };
+use crate::ai::prompts::{tutor_opening_messages, TUTOR_OPENING_V1};
+
 use crate::ai::schemas::parse_json;
 use crate::ai::stream::AiStreamEvent;
 use crate::ai::traits::{ChatMessage, ChatProvider, ChatRequest};
 use crate::db::repo::{
     courses as course_repo, learning as learning_repo, learning_loop as loop_repo,
 };
-use crate::domain::{Diagnosis, DiagnosisKind, LearningSessionStatus, ProviderConfig};
+use crate::domain::{
+    AgentAction, AgentActionKind, Diagnosis, DiagnosisKind, LearnerResponse, LearningSessionStatus,
+    LearningTurn, ProviderConfig,
+};
 use crate::error::AppError;
 use crate::knowledge::hybrid::{HybridHit, HybridRetriever, RetrievalFilter};
 use crate::services::adaptation_service::AdaptationService;
@@ -23,6 +28,7 @@ use uuid::Uuid;
 
 const RECENT_MESSAGE_WINDOW: usize = 8;
 const SUMMARY_TRIGGER_MESSAGES: usize = 12;
+const SUMMARY_INTERVAL_MESSAGES: usize = 6;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +60,10 @@ struct TutorReply {
     grounding: Option<String>,
     #[serde(default)]
     diagnosis: Option<TutorDiagnosisSchema>,
+    /// Internal mastery evidence for this conversational turn. Never rendered
+    /// as a score in the conversation UI.
+    #[serde(default)]
+    mastery_delta: f64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -81,6 +91,12 @@ pub struct TutorTurn {
     pub generated_by: String,
     pub adaptation: Option<crate::domain::AdaptationEvent>,
     pub inserted_node_id: Option<Uuid>,
+    /// Internal conversational evidence delta for this turn; never rendered as a score.
+    pub mastery_delta: f64,
+    /// Updated node mastery after applying this turn's evidence.
+    pub mastery: f64,
+    /// True once the conversation has enough reliable evidence to finish the node.
+    pub ready_to_complete: bool,
 }
 
 pub struct TutorService<'a> {
@@ -91,6 +107,278 @@ impl<'a> TutorService<'a> {
     pub fn new(state: &'a AppState) -> Self {
         Self { state }
     }
+    /// Start a Socratic session with an agent-authored first turn.
+    ///
+    /// The opening is persisted as the first assistant message, so reloading a
+    /// session and resuming it later preserves the same teaching thread.
+    pub async fn opening(&self, session_id: Uuid) -> Result<TutorTurn, AppError> {
+        let session = learning_repo::get_session(&self.state.pool, session_id).await?;
+        if session.status != LearningSessionStatus::Active {
+            return Err(AppError::InvalidInput(
+                "learning session is not active".into(),
+            ));
+        }
+        let node = course_repo::get_node(&self.state.pool, session.node_id).await?;
+        let lesson: Option<crate::ai::schemas::Lesson> = session
+            .summary_json
+            .as_deref()
+            .and_then(|value| parse_json(value).ok());
+
+        let steps = loop_repo::list_lesson_steps(&self.state.pool, node.id).await?;
+        let plan_summary = if steps.is_empty() {
+            "（尚未生成学习计划）".to_owned()
+        } else {
+            steps
+                .iter()
+                .map(|step| format!("{}. {}", step.ordinal + 1, step.title))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let retrieval_query = format!("{}\n{}", node.title, node.objective);
+        let retrieved = HybridRetriever::new(self.state)
+            .retrieve(
+                &retrieval_query,
+                RetrievalFilter::for_route(session.course_id).with_top_k(8),
+            )
+            .await
+            .unwrap_or_default();
+        let evidence_pairs: Vec<(Uuid, Option<String>, String)> = retrieved
+            .iter()
+            .map(|hit| {
+                (
+                    hit.chunk_id,
+                    Some(hit.source_title.clone()),
+                    hit.text.clone(),
+                )
+            })
+            .collect();
+        let labeled = labeled_evidence(&evidence_pairs);
+        let label_map = build_label_map(&labeled, &retrieved);
+
+        let mastery = learning_repo::get_mastery(&self.state.pool, node.id)
+            .await
+            .map(|state| state.mastery)
+            .unwrap_or(0.0);
+        let key_points = lesson
+            .as_ref()
+            .map(|lesson| lesson.key_points.join("；"))
+            .unwrap_or_default();
+        let diagnostic_question = lesson
+            .as_ref()
+            .map(|lesson| lesson.diagnostic_question.clone())
+            .unwrap_or_default();
+        let learner_context = format!(
+            "Node: {}\nObjective: {}\nLesson explanation:\n{}\n\nLearning plan:\n{}\n\nKey points: {}\nDiagnostic question: {}\nCurrent mastery: {:.2}",
+            node.title,
+            node.objective,
+            lesson
+                .as_ref()
+                .map(|lesson| lesson.explanation.as_str())
+                .unwrap_or(""),
+            plan_summary,
+            key_points,
+            diagnostic_question,
+            mastery,
+        );
+
+        let (config, chat) = self.state.providers.default_chat_provider().await?;
+        let is_mock = crate::ai::registry::is_mock_config(&config);
+        let messages = tutor_opening_messages(&learner_context, &labeled);
+        let response = chat
+            .chat(ChatRequest::json(config.chat_model.clone(), messages))
+            .await?;
+        let reply: TutorReply = parse_json(&response.content).unwrap_or_else(|error| {
+            tracing::warn!(%error, "opening tutor reply was not parseable JSON");
+            TutorReply {
+                message: response.content.clone(),
+                citations: Vec::new(),
+                suggested_action: "ask".to_owned(),
+                grounding: None,
+                diagnosis: None,
+                mastery_delta: 0.0,
+            }
+        });
+        let citations = resolve_citations(&reply, &label_map);
+        let grounding = choose_grounding(
+            false,
+            evidence_pairs.is_empty(),
+            &citations,
+            reply.grounding.as_deref(),
+        );
+        let generated_by =
+            crate::ai::provenance::generation_label(&config, !evidence_pairs.is_empty());
+
+        loop_repo::insert_message(
+            &self.state.pool,
+            session_id,
+            "assistant",
+            &reply.message,
+            &serde_json::json!({
+                "suggestedAction": reply.suggested_action,
+                "grounding": grounding,
+                "citations": citations.iter().map(|citation| citation.chunk_id).collect::<Vec<_>>(),
+                "generatedBy": generated_by,
+                "opening": true,
+            })
+            .to_string(),
+        )
+        .await?;
+
+        if !is_mock {
+            let _ = record_usage(
+                &self.state.pool,
+                "tutor_opening",
+                &config,
+                TUTOR_OPENING_V1,
+                response.usage.as_ref(),
+            )
+            .await;
+        }
+
+        Ok(TutorTurn {
+            message: reply.message,
+            suggested_action: if reply.suggested_action.trim().is_empty() {
+                "ask".to_owned()
+            } else {
+                reply.suggested_action
+            },
+            diagnosis: None,
+            diagnosis_detail: None,
+            citations,
+            grounding,
+            generated_by,
+            adaptation: None,
+            inserted_node_id: None,
+            mastery_delta: 0.0,
+            mastery,
+            ready_to_complete: false,
+        })
+    }
+
+    /// Assemble persisted messages into first-class conversational turns.
+    ///
+    /// A turn is one agent action plus the learner response that preceded it.
+    /// The opening turn has no learner response yet; subsequent turns preserve
+    /// both sides so session history remains a teaching conversation rather
+    /// than an undifferentiated message log.
+    pub async fn turns(&self, session_id: Uuid) -> Result<Vec<LearningTurn>, AppError> {
+        let records = loop_repo::list_message_records(&self.state.pool, session_id).await?;
+        let mut pending_learner: Option<LearnerResponse> = None;
+        let mut turns = Vec::new();
+
+        for record in records {
+            match record.role.as_str() {
+                "user" => {
+                    pending_learner = Some(LearnerResponse {
+                        text: record.content,
+                        inferred_state: None,
+                    });
+                }
+                "assistant" => {
+                    let suggested_action = serde_json::from_str::<serde_json::Value>(
+                        &record.metadata_json,
+                    )
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("suggestedAction")
+                            .and_then(|action| action.as_str())
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_else(|| "explain".to_owned());
+                    turns.push(LearningTurn {
+                        id: record.id,
+                        session_id: record.session_id,
+                        agent_action: AgentAction {
+                            kind: AgentActionKind::parse(&suggested_action),
+                            suggested_action,
+                        },
+                        learner_response: pending_learner.take(),
+                        created_at: record.created_at,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        Ok(turns)
+    }
+
+
+
+
+    /// Persist a small amount of mastery evidence from a conversational turn.
+    ///
+    /// The model can supply `masteryDelta`; when it does not, a confident
+    /// diagnosis still moves the internal estimate. The value is never shown
+    /// as a score, but it keeps the learner model alive during conversation.
+    async fn record_conversational_evidence(
+        &self,
+        session_id: Uuid,
+        node_id: Uuid,
+        user_message: &str,
+        reply: &TutorReply,
+        diagnosis: Option<&Diagnosis>,
+    ) -> Result<(f64, f64, i64), AppError> {
+        let delta = if reply.mastery_delta.abs() > f64::EPSILON {
+            reply.mastery_delta
+        } else if let Some(diagnosis) = diagnosis {
+            match diagnosis.kind {
+                DiagnosisKind::Mastered => 0.25,
+                DiagnosisKind::PartialUnderstanding => 0.10,
+                DiagnosisKind::IncorrectAnswer | DiagnosisKind::Misconception => -0.06,
+                _ => 0.0,
+            }
+        } else {
+            0.0
+        };
+        let state = learning_repo::get_mastery(&self.state.pool, node_id).await?;
+        let mastery = if delta.abs() <= f64::EPSILON {
+            state.mastery
+        } else {
+            let confidence = diagnosis.map(|diagnosis| diagnosis.confidence).unwrap_or(0.5);
+            let mastery =
+                crate::learning::mastery::update_mastery(state.mastery, delta, confidence);
+            let correctness = diagnosis
+                .map(|diagnosis| match diagnosis.kind {
+                    DiagnosisKind::Mastered => 0.9,
+                    DiagnosisKind::PartialUnderstanding => 0.6,
+                    DiagnosisKind::IncorrectAnswer => 0.25,
+                    DiagnosisKind::Misconception => 0.2,
+                    DiagnosisKind::RepeatedFailure => 0.15,
+                    DiagnosisKind::LowConfidence | DiagnosisKind::Uncertain => 0.4,
+                })
+                .unwrap_or_else(|| (0.5 + delta * 2.0).clamp(0.0, 1.0));
+            let attempt = crate::domain::LearningAttempt {
+                id: Uuid::new_v4(),
+                session_id,
+                node_id,
+                user_answer: user_message.to_owned(),
+                evaluation_json: serde_json::json!({
+                    "source": "conversation",
+                    "masteryDelta": delta,
+                    "diagnosis": diagnosis.map(|diagnosis| diagnosis.kind.as_str()),
+                })
+                .to_string(),
+                correctness,
+                created_at: utc_now(),
+            };
+            learning_repo::insert_attempt(&self.state.pool, &attempt).await?;
+            learning_repo::upsert_mastery(&self.state.pool, node_id, mastery, state.attempts + 1)
+                .await?;
+            mastery
+        };
+        let evidence_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_attempts WHERE session_id = ? AND node_id = ? AND evaluation_json LIKE '%\"source\":\"conversation\"%'",
+        )
+        .bind(session_id)
+        .bind(node_id)
+        .fetch_one(&self.state.pool)
+        .await?;
+        Ok((delta, mastery, evidence_count))
+    }
+
 
     pub async fn turn(&self, session_id: Uuid, message: &str) -> Result<TutorTurn, AppError> {
         let message = message.trim();
@@ -195,6 +483,7 @@ impl<'a> TutorService<'a> {
                 suggested_action: "continue".to_owned(),
                 grounding: None,
                 diagnosis: None,
+                mastery_delta: 0.0,
             }
         });
 
@@ -231,7 +520,7 @@ impl<'a> TutorService<'a> {
                 "suggestedAction": reply.suggested_action,
                 "grounding": grounding,
                 "citations": citations.iter().map(|citation| citation.chunk_id).collect::<Vec<_>>(),
-                "generatedBy": if is_mock { "mock" } else { "ai" },
+                "generatedBy": crate::ai::provenance::generation_label(&config, !evidence_pairs.is_empty()),
             })
             .to_string(),
         )
@@ -248,6 +537,30 @@ impl<'a> TutorService<'a> {
             adaptation = outcome.event;
             inserted_node_id = outcome.inserted_node_id;
         }
+
+        let (mastery_delta, mastery, evidence_count) = match self
+            .record_conversational_evidence(
+                session_id,
+                node.id,
+                message,
+                &reply,
+                diagnosis_detail.as_ref(),
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(%error, "conversational mastery evidence was not persisted");
+                let mastery = learning_repo::get_mastery(&self.state.pool, node.id)
+                    .await
+                    .map(|state| state.mastery)
+                    .unwrap_or(0.0);
+                (reply.mastery_delta, mastery, 0)
+            }
+        };
+        let ready_to_complete =
+            ready_to_complete(mastery, evidence_count, &reply, diagnosis_detail.as_ref());
+
 
         if !is_mock {
             let _ = record_usage(
@@ -276,9 +589,12 @@ impl<'a> TutorService<'a> {
             diagnosis_detail,
             citations,
             grounding,
-            generated_by: if is_mock { "mock".into() } else { "ai".into() },
+            generated_by: crate::ai::provenance::generation_label(&config, !evidence_pairs.is_empty()),
             adaptation,
             inserted_node_id,
+            mastery_delta,
+            mastery,
+            ready_to_complete,
         })
     }
 
@@ -374,7 +690,6 @@ impl<'a> TutorService<'a> {
         );
 
         let (config, chat) = self.state.providers.default_chat_provider().await?;
-        let is_mock = crate::ai::registry::is_mock_config(&config);
         let messages = tutor_stream_context_messages(
             &learner_context,
             summary.as_deref(),
@@ -421,12 +736,23 @@ impl<'a> TutorService<'a> {
         }
 
         let (message_text, diagnosis) = parse_stream_tutor_reply(&full_text);
+        let diagnosis_detail = diagnosis.as_ref().map(|diagnosis| {
+            Diagnosis::new(
+                DiagnosisKind::parse(&diagnosis.kind),
+                diagnosis.knowledge_point_ids.clone(),
+                diagnosis.confidence,
+                diagnosis.severity,
+                diagnosis.explanation.clone(),
+            )
+        });
+        let suggested_action = stream_suggested_action(diagnosis_detail.as_ref());
         let reply = TutorReply {
             message: message_text,
             citations: Vec::new(),
-            suggested_action: "continue".to_owned(),
+            suggested_action: suggested_action.clone(),
             grounding: None,
             diagnosis,
+            mastery_delta: 0.0,
         };
 
         let citations = resolve_citations(&reply, &label_map);
@@ -437,15 +763,6 @@ impl<'a> TutorService<'a> {
             &citations,
             reply.grounding.as_deref(),
         );
-        let diagnosis_detail = reply.diagnosis.as_ref().map(|diagnosis| {
-            Diagnosis::new(
-                DiagnosisKind::parse(&diagnosis.kind),
-                diagnosis.knowledge_point_ids.clone(),
-                diagnosis.confidence,
-                diagnosis.severity,
-                diagnosis.explanation.clone(),
-            )
-        });
 
         loop_repo::insert_message(
             &self.state.pool,
@@ -456,7 +773,7 @@ impl<'a> TutorService<'a> {
                 "suggestedAction": reply.suggested_action,
                 "grounding": grounding,
                 "citations": citations.iter().map(|citation| citation.chunk_id).collect::<Vec<_>>(),
-                "generatedBy": if is_mock { "mock" } else { "ai" },
+                "generatedBy": crate::ai::provenance::generation_label(&config, !evidence_pairs.is_empty()),
                 "streamed": true,
             })
             .to_string(),
@@ -473,22 +790,49 @@ impl<'a> TutorService<'a> {
             inserted_node_id = outcome.inserted_node_id;
         }
 
+        let (mastery_delta, mastery, evidence_count) = match self
+            .record_conversational_evidence(
+                session_id,
+                node.id,
+                message,
+                &reply,
+                diagnosis_detail.as_ref(),
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(%error, "conversational mastery evidence was not persisted");
+                let mastery = learning_repo::get_mastery(&self.state.pool, node.id)
+                    .await
+                    .map(|state| state.mastery)
+                    .unwrap_or(0.0);
+                (reply.mastery_delta, mastery, 0)
+            }
+        };
+        let ready_to_complete =
+            ready_to_complete(mastery, evidence_count, &reply, diagnosis_detail.as_ref());
+
+
         let _ = self
             .refresh_session_summary(session_id, &config, chat.as_ref())
             .await;
 
         let turn = TutorTurn {
             message: reply.message,
-            suggested_action: "continue".to_owned(),
+            suggested_action: suggested_action.clone(),
             diagnosis: diagnosis_detail
                 .as_ref()
                 .map(|diagnosis| diagnosis.explanation.clone()),
             diagnosis_detail,
             citations,
             grounding,
-            generated_by: if is_mock { "mock".into() } else { "ai".into() },
+            generated_by: crate::ai::provenance::generation_label(&config, !evidence_pairs.is_empty()),
             adaptation,
             inserted_node_id,
+            mastery_delta,
+            mastery,
+            ready_to_complete,
         };
 
         let citation_titles: Vec<String> = turn
@@ -516,19 +860,36 @@ impl<'a> TutorService<'a> {
         if messages.len() < SUMMARY_TRIGGER_MESSAGES {
             return Ok(());
         }
-        let existing_count: Option<i64> =
-            sqlx::query_scalar("SELECT message_count FROM session_summaries WHERE session_id = ?")
-                .bind(session_id)
-                .fetch_optional(&self.state.pool)
-                .await?;
-        if existing_count.map(|count| count as usize) == Some(messages.len()) {
+        let previous = sqlx::query_as::<_, (i64, String)>(
+            "SELECT message_count, summary FROM session_summaries WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.state.pool)
+        .await?;
+        let should_refresh = match previous.as_ref() {
+            None => true,
+            Some((count, _)) => {
+                messages.len() >= (*count as usize).saturating_add(SUMMARY_INTERVAL_MESSAGES)
+            }
+        };
+        if !should_refresh {
             return Ok(());
         }
-        let transcript = messages
+        let start = previous
+            .as_ref()
+            .map(|(count, _)| (*count as usize).min(messages.len()))
+            .unwrap_or(0);
+        let new_turns = messages[start..]
             .iter()
             .map(|(role, content)| format!("{role}: {content}"))
             .collect::<Vec<_>>()
             .join("\n");
+        let transcript = match previous.as_ref() {
+            Some((_, summary)) => {
+                format!("Previous summary:\n{summary}\n\nNew turns:\n{new_turns}")
+            }
+            None => new_turns,
+        };
         let response = chat
             .chat(ChatRequest::new(
                 config.chat_model.clone(),
@@ -553,6 +914,38 @@ impl<'a> TutorService<'a> {
         Ok(())
     }
 }
+
+fn stream_suggested_action(diagnosis: Option<&Diagnosis>) -> String {
+    match diagnosis.map(|diagnosis| diagnosis.kind) {
+        Some(DiagnosisKind::Mastered) => "summarize",
+        Some(DiagnosisKind::PartialUnderstanding) => "probe",
+        Some(DiagnosisKind::Misconception) => "counterexample",
+        Some(DiagnosisKind::IncorrectAnswer) => "hint",
+        Some(DiagnosisKind::RepeatedFailure) => "explain",
+        Some(DiagnosisKind::LowConfidence) | Some(DiagnosisKind::Uncertain) => "explain",
+        None => "continue",
+    }
+    .to_owned()
+}
+
+
+fn ready_to_complete(
+    mastery: f64,
+    evidence_count: i64,
+    reply: &TutorReply,
+    diagnosis: Option<&Diagnosis>,
+) -> bool {
+    let action = AgentActionKind::parse(&reply.suggested_action);
+    let natural_finish = matches!(
+        action,
+        AgentActionKind::Summarize
+            | AgentActionKind::Transition
+            | AgentActionKind::CompleteConcept
+    ) || diagnosis.is_some_and(|diagnosis| diagnosis.kind == DiagnosisKind::Mastered);
+    (mastery >= 0.55 && evidence_count >= 4)
+        || (mastery >= 0.45 && evidence_count >= 3 && natural_finish)
+}
+
 
 fn build_label_map(
     labeled: &[LabeledEvidence],
@@ -729,6 +1122,7 @@ mod tests {
             suggested_action: "continue".to_owned(),
             grounding: None,
             diagnosis: None,
+            mastery_delta: 0.0,
         }
     }
 
@@ -784,4 +1178,29 @@ mod tests {
         );
         assert_eq!(choose_grounding(false, false, &[], None), "model_knowledge");
     }
+
+    fn tutor_reply(action: &str) -> TutorReply {
+        TutorReply {
+            message: String::new(),
+            citations: Vec::new(),
+            suggested_action: action.to_owned(),
+            grounding: None,
+            diagnosis: None,
+            mastery_delta: 0.0,
+        }
+    }
+
+    #[test]
+    fn conversation_completion_requires_repeated_evidence() {
+        assert!(!ready_to_complete(
+            0.6,
+            1,
+            &tutor_reply("completeConcept"),
+            None
+        ));
+        assert!(ready_to_complete(0.6, 4, &tutor_reply("explain"), None));
+        assert!(ready_to_complete(0.5, 3, &tutor_reply("summarize"), None));
+        assert!(!ready_to_complete(0.4, 3, &tutor_reply("summarize"), None));
+    }
+
 }

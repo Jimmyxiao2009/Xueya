@@ -1,0 +1,20 @@
+:root[data-theme=dark]{color-scheme:dark;--bg:#222420;--panel:#2c2e29;--text:#eee9dd;--muted:#b0ada2;--line:#41443b;--accent:#dfa184;--green:#dfa184;--purple:#bea6d5;--orange:#d8b778;--success:#a5c198;--paper-strong:#32352e;--canvas-deep:#171916;--surface-float:#30332c;--surface-focus:#433b2e;--warm-gray:#b4afa1;--warm-gray-soft:#928e81;--warm-shadow:#131510;--bar-track:#41443b;--bar-fill:#ce9274;--node-face:#383b32;--shadow-panel:0 6px 24px #0002;--shadow-float:0 5px 0 #151810,0 12px 38px #0003;--shadow-press:0 1px 0 #151810}
+html[data-theme]{background:var(--canvas-deep)}
+[data-theme=dark] .primary{background:#e3c5ac;color:#282820;box-shadow:0 3px 0 #99826a}
+[data-theme=dark] :is(input,textarea,select){background:var(--panel);color:var(--text);border-color:var(--line)}
+[data-theme=dark] :is(.map-menu,.now-card,.route-card,.field,.empty-state,.option-card,.source-item,.lesson-card,.float-sheet){background-color:var(--panel);border-color:var(--line);color:var(--text);box-shadow:var(--shadow-panel)}
+[data-theme=dark] .bar{background:var(--bar-track)}[data-theme=dark] .bar i{background:var(--bar-fill)}
+[data-theme=dark] .node:not(.current){background:linear-gradient(145deg,#43473b,#32372b);border-color:#4e5545;color:#b8bfac;box-shadow:0 6px 0 #151b12,inset 0 2px 0 #555d48}
+[data-theme=dark] .node.done{color:#b4d5a0}[data-theme=dark] .node.review{color:var(--purple)}[data-theme=dark] .node.quiz{color:var(--orange)}
+[data-theme=dark] .path path{stroke:#59604f}[data-theme=dark] .path .completed-path{stroke:#b18b6c}
+[data-theme=dark] .road{background-image:radial-gradient(#b0bda326 .7px,transparent .7px)}
+[data-theme=dark] :is(.lesson-top,.lesson-body,.lesson-pane,.learning-screen,.screen-transition-stage,.layer-panel,.roadmap-layer,.create-page){background-color:var(--bg)}
+[data-theme=dark] :is(.secondary,.chip,.badge,.mode-chip){background:var(--panel);border-color:var(--line);color:var(--text)}
+[data-theme=dark] :is(.message,.resource p,.completion p,.bottom-notice p){color:var(--text)}
+[data-theme=dark] :is(.option,.message.user,.formula,.diagram,.composer,.acrylic,.completion,.feedback,.feedback.wrong){background:var(--panel);border-color:var(--line);color:var(--text);box-shadow:var(--shadow-panel)}
+[data-theme=dark] :is(.option.selected,.option:not(.selected):hover,.progress-chips button.active,.question-types button.active,.secondary:hover,.map-menu:hover){background:var(--surface-focus);border-color:var(--accent);color:var(--text)}
+[data-theme=dark] :is(.progress-chips button.learned,.feedback){background:#303c2a;color:var(--success);border-color:#536548}
+[data-theme=dark] .feedback.wrong{background:#413728;color:var(--orange)}
+[data-theme=dark] .chat-progress{background:color-mix(in srgb,var(--bg) 95%,transparent)}
+[data-theme=dark] :is(.tag,.duration,.step-label,.assistant-label,.quiz-tag,.diagram-caption,.upload,.composer-note,.endnote,.home-footer,.roadmap-layer .layer-label){color:var(--muted)}
+[data-theme=dark] .roadmap-layer .layer-map.selected .route-select strong{color:var(--accent)}

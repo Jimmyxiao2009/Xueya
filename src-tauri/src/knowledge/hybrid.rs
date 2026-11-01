@@ -184,7 +184,7 @@ impl<'a> HybridRetriever<'a> {
             .await
     }
 
-    async fn allowed_chunk_ids(
+    pub(crate) async fn allowed_chunk_ids(
         &self,
         filter: &RetrievalFilter,
     ) -> Result<Option<HashSet<Uuid>>, AppError> {
@@ -193,8 +193,10 @@ impl<'a> HybridRetriever<'a> {
         if let Some(route_id) = filter.route_id {
             let mut route_ids = HashSet::new();
             let course = course_repo::get_course(&self.state.pool, route_id).await?;
+            let mut explicit_sources = false;
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&course.metadata_json) {
                 if let Some(values) = value.get("sourceIds").and_then(|value| value.as_array()) {
+                    explicit_sources = !values.is_empty();
                     for value in values {
                         if let Some(source_id) =
                             value.as_str().and_then(|v| Uuid::parse_str(v).ok())
@@ -204,8 +206,11 @@ impl<'a> HybridRetriever<'a> {
                     }
                 }
             }
-            for node in course_repo::list_nodes(&self.state.pool, route_id).await? {
-                route_ids.extend(evidence_ids_from_metadata(&node.metadata_json));
+            // Explicit source selection is authoritative even if historical node metadata is contaminated.
+            if !explicit_sources {
+                for node in course_repo::list_nodes(&self.state.pool, route_id).await? {
+                    route_ids.extend(evidence_ids_from_metadata(&node.metadata_json));
+                }
             }
             sets.push(route_ids);
         }

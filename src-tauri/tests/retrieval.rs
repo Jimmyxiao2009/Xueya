@@ -80,6 +80,29 @@ async fn create_route(state: &AppState, topic: &str, source_ids: Vec<Uuid>) -> U
 }
 
 #[tokio::test]
+async fn empty_selected_source_never_falls_through_to_other_sources() {
+    let (state, _dir) = test_state().await;
+    let other = ingest_text(&state, "other.txt", "SECRET OTHER SOURCE: projective geometry infinity").await;
+    let empty = Uuid::new_v4();
+    let route = create_route(&state, "projective geometry infinity", vec![empty]).await;
+    let course = course_repo::get_course(&state.pool, route).await.unwrap();
+    let meta: serde_json::Value = serde_json::from_str(&course.metadata_json).unwrap();
+    assert_eq!(meta["evidenceChunkIds"], serde_json::json!([]));
+    let nodes = course_repo::list_nodes(&state.pool, route).await.unwrap();
+    // Simulate metadata left by an older buggy build. Explicit selection must still win.
+    let other_hits = verruckt_lib::services::knowledge_service::KnowledgeService::new(&state)
+        .evidence_for_sources(&[other], "geometry", 5).await.unwrap();
+    assert!(!other_hits.is_empty());
+    let dirty = serde_json::json!({"evidenceChunkIds": [other_hits[0].chunk.id]});
+    sqlx::query("UPDATE course_nodes SET metadata_json = ? WHERE id = ?")
+        .bind(dirty.to_string()).bind(nodes[0].id).execute(&state.pool).await.unwrap();
+    let prepared = CourseService::new(&state).prepare_node(nodes[0].id, None).await.unwrap();
+    assert!(prepared.citations.is_empty());
+    assert_eq!(prepared.generated_by, "deterministic");
+    assert!(HybridRetriever::new(&state).retrieve("geometry", RetrievalFilter::for_route(route)).await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn hybrid_retrieval_finds_projective_infinity_and_keeps_routes_isolated() {
     let (state, _dir) = test_state().await;
     let geometry_source = ingest_text(

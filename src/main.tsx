@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "@/App";
+import { OnboardingGate } from "@/components/onboarding/OnboardingGate";
 import { startForegroundSync } from "@/stores/cloudStore";
 import "@/styles/index.css";
 
@@ -11,6 +12,6 @@ if (!container) throw new Error("#root is missing from index.html");
 
 createRoot(container).render(
   <StrictMode>
-    <App />
+    <OnboardingGate><App /></OnboardingGate>
   </StrictMode>,
 );

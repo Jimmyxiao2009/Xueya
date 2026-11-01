@@ -7,11 +7,16 @@
 #   pwsh -File scripts/e2e-cloud.ps1
 param(
     [string]$Email = "e2e-$([guid]::NewGuid().ToString('N').Substring(0, 8))@example.com",
-    [string]$Password = "password123",
+    [string]$Password = $env:VERRUCKT_E2E_PASSWORD,
     [string]$CloudUrl = "http://127.0.0.1:8080"
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($Password)) {
+  $Password = "e2e-" + [guid]::NewGuid().ToString("N")
+}
+
 
 Write-Host "Starting Verruckt Cloud compose stack..."
 Push-Location (Join-Path $PSScriptRoot "..\cloud")

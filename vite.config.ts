@@ -19,6 +19,15 @@ export default defineConfig({
     host: host || false,
     port: 1420,
     strictPort: true,
+    proxy: {
+      "/api": { target: process.env.ORBIT_API_TARGET || "http://127.0.0.1:1430" },
+      "/healthz": { target: process.env.ORBIT_API_TARGET || "http://127.0.0.1:1430" },
+    },
+    // Native build outputs can be locked by the Windows linker. They do not
+    // participate in frontend HMR and must not be watched by Vite.
+    watch: {
+      ignored: ["**/target/**", "**/src-tauri/**", "**/cloud/**", "**/crates/**", "**/audit-results/**", "**/competition/**", "**/.orbit-server/**", "**/*.tmpdir/**", "**/.*.tmpdir/**"],
+    },
     hmr: host
       ? {
           protocol: "ws",

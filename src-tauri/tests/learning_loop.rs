@@ -8,7 +8,7 @@ use verruckt_lib::bootstrap;
 use verruckt_lib::db::repo::{
     courses as course_repo, learning as learning_repo, learning_loop as loop_repo,
 };
-use verruckt_lib::domain::{CourseNodeStatus, NodeKind, QuizKind};
+use verruckt_lib::domain::{AgentActionKind, CourseNodeStatus, NodeKind, QuizKind};
 use verruckt_lib::secrets::keyring_store::InMemorySecretStore;
 use verruckt_lib::services::course_service::{CourseService, RouteRequest};
 use verruckt_lib::services::learning_service::LearningService;
@@ -570,5 +570,124 @@ async fn an_adaptation_survives_a_database_reopen_and_stays_idempotent() {
             .filter(|node| node.id == review_id)
             .count(),
         1
+    );
+}
+
+#[tokio::test]
+async fn session_opening_is_agent_authored_and_persisted() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "射影几何").await;
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+    let started = LearningService::new(&state)
+        .start(nodes[0].id, None)
+        .await
+        .expect("session");
+
+    let opening = TutorService::new(&state)
+        .opening(started.session.id)
+        .await
+        .expect("agent opening");
+    assert!(!opening.message.trim().is_empty());
+    assert_eq!(opening.generated_by, "mock");
+    assert!(
+        opening.message.contains("先不急着记定义") || opening.message.contains('？'),
+        "opening should be a concrete teaching move, got: {}",
+        opening.message
+    );
+
+    let messages = loop_repo::list_messages(&state.pool, started.session.id)
+        .await
+        .expect("messages");
+    assert!(
+        messages
+            .iter()
+            .any(|(role, content)| role == "assistant" && content == &opening.message),
+        "opening must be persisted as the first assistant message"
+    );
+
+    let turns = TutorService::new(&state)
+        .turns(started.session.id)
+        .await
+        .expect("turns");
+    assert_eq!(turns.len(), 1);
+    assert!(turns[0].learner_response.is_none());
+    assert_eq!(turns[0].agent_action.kind, AgentActionKind::Ask);
+
+}
+#[tokio::test]
+async fn tutor_turns_pair_learner_response_with_agent_action() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "线性代数").await;
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+    let started = LearningService::new(&state)
+        .start(nodes[0].id, None)
+        .await
+        .expect("session");
+
+    TutorService::new(&state)
+        .opening(started.session.id)
+        .await
+        .expect("opening");
+    TutorService::new(&state)
+        .turn(started.session.id, "我不太懂特征值")
+        .await
+        .expect("tutor turn");
+
+    let turns = TutorService::new(&state)
+        .turns(started.session.id)
+        .await
+        .expect("turns");
+    assert_eq!(turns.len(), 2);
+    assert!(turns[0].learner_response.is_none());
+    let second = &turns[1];
+    assert_eq!(
+        second.learner_response.as_ref().expect("learner response").text,
+        "我不太懂特征值"
+    );
+    assert!(!second.agent_action.suggested_action.trim().is_empty());
+}
+
+#[tokio::test]
+async fn reopening_a_node_resumes_the_active_session_without_a_second_opening() {
+    let (state, _dir) = test_state().await;
+    let course_id = create_route(&state, "复变函数").await;
+    let nodes = course_repo::list_nodes(&state.pool, course_id)
+        .await
+        .expect("nodes");
+    let node = nodes.first().expect("first node");
+
+    let first = LearningService::new(&state)
+        .start(node.id, None)
+        .await
+        .expect("first start");
+    assert!(!first.resumed);
+
+    TutorService::new(&state)
+        .opening(first.session.id)
+        .await
+        .expect("opening");
+    TutorService::new(&state)
+        .turn(first.session.id, "我不太懂留数定理")
+        .await
+        .expect("tutor turn");
+    let messages_before = loop_repo::list_messages(&state.pool, first.session.id)
+        .await
+        .expect("messages");
+    assert_eq!(messages_before.len(), 3, "opening + user + assistant");
+
+    let resumed = LearningService::new(&state)
+        .start(node.id, None)
+        .await
+        .expect("resume");
+    assert!(resumed.resumed);
+    assert_eq!(resumed.session.id, first.session.id);
+    assert_eq!(
+        resumed.messages.len(),
+        messages_before.len(),
+        "resume must not append a second opening"
     );
 }

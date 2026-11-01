@@ -1,24 +1,19 @@
-Orbit v0.1.0-rc.1 release checksums
-Generated during COMPETITION RELEASE VALIDATION & FREEZE.
+学涯 / Orbit v0.1.0-rc.1 release checksums
+Generated during FINAL RELEASE PACKAGING.
 
 NSIS installer
-  path:   src-tauri/target/release/bundle/nsis/Orbit_0.1.0-rc.1_x64-setup.exe
-  bytes:  7004065
-  sha256: b7f332287ec35c8019ae9542da1805b50a48caf4e08cfd287e9bece2d16957ee
-  ProductName:    Orbit
-  FileVersion:    0.1.0-rc.1
-  ProductVersion: 0.1.0-rc.1
-
-Installed desktop executable
-  path:   %LOCALAPPDATA%\Orbit\verruckt.exe
-  bytes:  28133376
-  sha256: b488a8b1653a1f1ffffcbfdb040e5c00fca876e41dc3a92c63d3e3e1a324d7f5
-  ProductName:    Orbit
-  FileVersion:    0.1.0-rc.1
-  ProductVersion: 0.1.0-rc.1
-  CompanyName:    verruckt
+  path:   release-artifacts/学涯_0.1.0-rc.1_x64-setup.exe
+  bytes:  8070852
+  sha256: 371F81742E8165B104164A3A32BE9F3129684269D33A170C05B42F28FE20EBFE
+  ProductName:    
+学涯
+  FileVersion:    
+0.1.0-rc.1
+  ProductVersion: 
+0.1.0-rc.1
 
 Notes
-  - The NSIS installer is the supported Windows release artifact for rc.1.
-  - MSI remains unavailable because the pre-release identifier `rc.1` is not
-    numeric-only; changing that would alter the frozen release version.
+  - This installer is the current final local validation build.
+  - It embeds the local validation Cloud endpoint and is unsigned.
+  - Final competition packages must be rebuilt with a real HTTPS Cloud URL via scripts/build-with-cloud.ps1.
+  - Binary package hashes are also published in release-package/SHA256SUMS.txt.

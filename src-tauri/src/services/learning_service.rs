@@ -5,8 +5,8 @@ use crate::db::repo::{
     courses as course_repo, learning as learning_repo, learning_loop as loop_repo,
 };
 use crate::domain::{
-    AdaptationEvent, CourseNodeStatus, Diagnosis, DiagnosisKind, LearningAttempt, LearningSession,
-    LearningSessionStatus,
+    AdaptationEvent, CourseNodeStatus, Diagnosis, DiagnosisKind, LearningAttempt, LearningMessageRecord,
+    LearningSession, LearningSessionStatus,
 };
 use crate::error::AppError;
 use crate::jobs::manager::JobHandle;
@@ -23,9 +23,13 @@ pub struct LearningStart {
     pub session: LearningSession,
     pub prepared: crate::services::course_service::PreparedLesson,
     pub mastery: f64,
+    /// True when an existing active session was restored instead of created.
+    pub resumed: bool,
+    /// Persisted conversation messages for resume. Empty for a new session.
+    pub messages: Vec<LearningMessageRecord>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LearningResponse {
     pub evaluation: crate::ai::schemas::Evaluation,
     pub mastery: f64,
@@ -53,6 +57,23 @@ impl<'a> LearningService<'a> {
         let prepared = crate::services::course_service::CourseService::new(self.state)
             .prepare_node(node_id, handle)
             .await?;
+
+        // Resume the active session for this local profile/course/node instead of
+        // creating a second opening and forking the conversation.
+        if let Some(session) =
+            learning_repo::find_active_session(&self.state.pool, node.course_id, node_id).await?
+        {
+            let messages =
+                loop_repo::list_message_records(&self.state.pool, session.id).await?;
+            return Ok(LearningStart {
+                session,
+                mastery: prepared.mastery,
+                prepared,
+                resumed: true,
+                messages,
+            });
+        }
+
         let now: DateTime<Utc> = utc_now();
         let session = LearningSession {
             id: Uuid::new_v4(),
@@ -66,14 +87,17 @@ impl<'a> LearningService<'a> {
                     .map_err(|error| AppError::Internal(error.to_string()))?,
             ),
         };
-        learning_repo::insert_session(&self.state.pool, &session).await?;
-        course_repo::update_node_status(&self.state.pool, node_id, CourseNodeStatus::InProgress)
-            .await?;
+        let mut tx = self.state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        learning_repo::insert_session_tx(&mut tx, &session).await?;
+        course_repo::update_node_status_tx(&mut tx, node_id, CourseNodeStatus::InProgress).await?;
+        tx.commit().await?;
         let mastery = prepared.mastery;
         Ok(LearningStart {
             session,
             prepared,
             mastery,
+            resumed: false,
+            messages: Vec::new(),
         })
     }
 
@@ -83,6 +107,23 @@ impl<'a> LearningService<'a> {
         answer: &str,
         handle: Option<&JobHandle>,
     ) -> Result<LearningResponse, AppError> {
+        let operation_key = format!(
+            "learning_service:{}",
+            crate::util::hashing::sha256_text(
+                &serde_json::to_string(&(session_id, answer))
+                    .map_err(|e| AppError::Internal(e.to_string()))?
+            )
+        );
+        if let Some(saved) = sqlx::query_scalar::<_, String>(
+            "SELECT payload_json FROM learning_outcomes WHERE operation_key = ?",
+        )
+        .bind(&operation_key)
+        .fetch_optional(&self.state.pool)
+        .await?
+        {
+            return serde_json::from_str(&saved).map_err(|e| AppError::Internal(e.to_string()));
+        }
+
         if answer.trim().is_empty() {
             return Err(AppError::InvalidInput("answer cannot be empty".into()));
         }
@@ -119,7 +160,6 @@ impl<'a> LearningService<'a> {
             ));
         }
         let labeled = labeled_evidence(&evidence_pairs);
-        let mastery_state = learning_repo::get_mastery(&self.state.pool, node.id).await?;
         let point_ids: Vec<Uuid> = loop_repo::points_for_node(&self.state.pool, node.id)
             .await?
             .into_iter()
@@ -205,6 +245,17 @@ impl<'a> LearningService<'a> {
             diagnoses: diagnoses.clone(),
             confidence: Some(raw.confidence),
         };
+        let mut tx = self.state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(saved) = sqlx::query_scalar::<_, String>(
+            "SELECT payload_json FROM learning_outcomes WHERE operation_key = ?",
+        )
+        .bind(&operation_key)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            return serde_json::from_str(&saved).map_err(|e| AppError::Internal(e.to_string()));
+        }
+        let mastery_state = learning_repo::get_mastery_tx(&mut tx, node.id).await?;
         let new_mastery = next_mastery(mastery_state.mastery, &evaluation, answer.chars().count());
         let attempts = mastery_state.attempts + 1;
 
@@ -218,21 +269,21 @@ impl<'a> LearningService<'a> {
             correctness: evaluation.correctness,
             created_at: utc_now(),
         };
-        learning_repo::insert_attempt(&self.state.pool, &attempt).await?;
-        learning_repo::upsert_mastery(&self.state.pool, node.id, new_mastery, attempts).await?;
+        learning_repo::insert_attempt_tx(&mut *tx, &attempt).await?;
+        learning_repo::upsert_mastery_tx(&mut *tx, node.id, new_mastery, attempts).await?;
         let status = if new_mastery >= 0.8 {
             CourseNodeStatus::Completed
         } else {
             CourseNodeStatus::InProgress
         };
-        course_repo::update_node_status(&self.state.pool, node.id, status).await?;
+        course_repo::update_node_status_tx(&mut *tx, node.id, status).await?;
 
         // ---- unified adaptation ------------------------------------------
         let mut adaptation = None;
         let mut inserted_node_id = None;
         for diagnosis in &diagnoses {
             let outcome = AdaptationService::new(self.state)
-                .apply(session.course_id, node.id, diagnosis)
+                .apply_tx(&mut *tx, session.course_id, node.id, diagnosis)
                 .await?;
             if outcome.event.is_some() {
                 adaptation = outcome.event;
@@ -241,6 +292,20 @@ impl<'a> LearningService<'a> {
                 inserted_node_id = outcome.inserted_node_id;
             }
         }
+        let outcome = LearningResponse {
+            evaluation,
+            mastery: new_mastery,
+            attempts,
+            adaptation,
+            inserted_node_id,
+            diagnoses,
+        };
+        sqlx::query("INSERT INTO learning_outcomes (operation_key, payload_json) VALUES (?, ?)")
+            .bind(&operation_key)
+            .bind(serde_json::to_string(&outcome).map_err(|e| AppError::Internal(e.to_string()))?)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         let _ = crate::services::tutor_service::record_usage(
             &self.state.pool,
             "free_text_evaluation",
@@ -253,14 +318,7 @@ impl<'a> LearningService<'a> {
             handle.progress(0.95, "Mastery updated").await?;
         }
 
-        Ok(LearningResponse {
-            evaluation,
-            mastery: new_mastery,
-            attempts,
-            adaptation,
-            inserted_node_id,
-            diagnoses,
-        })
+        Ok(outcome)
     }
 
     pub async fn finish(&self, session_id: Uuid) -> Result<LearningSession, AppError> {

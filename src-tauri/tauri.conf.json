@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Orbit",
+  "productName": "学涯",
   "version": "0.1.0-rc.1",
   "identifier": "app.verruckt.desktop",
   "build": {
@@ -13,12 +13,12 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "Orbit · 学习的下一站",
+        "title": "学涯 · 学习的下一站",
         "label": "main",
-        "width": 420,
-        "height": 880,
-        "minWidth": 360,
-        "minHeight": 600,
+          "width": 1180,
+          "height": 780,
+          "minWidth": 960,
+          "minHeight": 640,
         "resizable": true,
         "center": true,
         "dragDropEnabled": true
@@ -37,8 +37,16 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
+    "publisher": "学涯",
+    "copyright": "Copyright © 2026 学涯",
     "shortDescription": "把好奇心变成一条不断生长的学习路径。",
-    "longDescription": "Orbit 把资料整理成一条会生长的学习路线：来源 → 综合 → 路线 → 学习 → 提问 → 诊断 → 调整 → 复习。",
-    "category": "Education"
+    "longDescription": "学涯 把资料整理成一条会生长的学习路线：来源 → 综合 → 路线 → 学习 → 提问 → 诊断 → 调整 → 复习。",
+    "category": "Education",
+    "windows": {
+      "wix": {
+        "version": "0.1.0",
+        "upgradeCode": "e565e6a7-7e49-592e-a3b5-ba31cc409281"
+      }
+    }
   }
 }

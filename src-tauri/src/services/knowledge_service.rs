@@ -42,14 +42,31 @@ impl<'a> KnowledgeService<'a> {
     ) -> Result<Vec<RetrievedChunk>, AppError> {
         let evidence_ids = evidence_chunk_ids(node);
         let mut chunks = chunk_repo::get_chunks_by_ids(&self.state.pool, &evidence_ids).await?;
+        let allowed = crate::knowledge::hybrid::HybridRetriever::new(self.state)
+            .allowed_chunk_ids(&crate::knowledge::hybrid::RetrievalFilter::for_route(
+                node.course_id,
+            ))
+            .await?;
+        if let Some(allowed) = allowed {
+            chunks.retain(|chunk| allowed.contains(&chunk.id));
+        }
+        chunks.truncate(limit);
         if !chunks.is_empty() {
             return Ok(chunks
                 .drain(..)
                 .map(|chunk| RetrievedChunk { chunk, score: 1.0 })
                 .collect());
         }
-        self.semantic_search(&format!("{} {}", node.title, node.objective), limit)
-            .await
+        use crate::knowledge::hybrid::{HybridRetriever, RetrievalFilter};
+        Ok(HybridRetriever::new(self.state)
+            .retrieve(
+                &format!("{} {}", node.title, node.objective),
+                RetrievalFilter::for_route(node.course_id).with_top_k(limit),
+            )
+            .await?
+            .into_iter()
+            .map(|hit| hit.into_retrieved())
+            .collect())
     }
 
     /// Evidence restricted to a set of imported sources.

@@ -22,6 +22,9 @@ interface SettingsState {
   providers: Provider[];
   searchProvider: string;
   hasBraveApiKey: boolean;
+  hasTavilyApiKey: boolean;
+  hasSerperApiKey: boolean;
+  searxngUrl: string;
   aiMode: string;
   loading: boolean;
   error: string | null;
@@ -31,7 +34,13 @@ interface SettingsState {
   save: (draft: ProviderDraft) => Promise<boolean>;
   remove: (id: string) => Promise<void>;
   test: (id: string) => Promise<void>;
-  saveSearch: (input: { searchProvider?: string; braveApiKey?: string }) => Promise<void>;
+  saveSearch: (input: {
+    searchProvider?: string;
+    braveApiKey?: string;
+    tavilyApiKey?: string;
+    serperApiKey?: string;
+    searxngUrl?: string;
+  }) => Promise<void>;
   setAiMode: (mode: string) => Promise<void>;
 }
 
@@ -53,8 +62,11 @@ export const EMPTY_DRAFT: ProviderDraft = {
  */
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   providers: [],
-  searchProvider: "none",
+  searchProvider: "auto",
   hasBraveApiKey: false,
+  hasTavilyApiKey: false,
+  hasSerperApiKey: false,
+  searxngUrl: "",
   aiMode: "offline",
   loading: false,
   error: null,
@@ -71,6 +83,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         providers,
         searchProvider: settings.searchProvider,
         hasBraveApiKey: settings.hasBraveApiKey,
+        hasTavilyApiKey: settings.hasTavilyApiKey,
+        hasSerperApiKey: settings.hasSerperApiKey,
+        searxngUrl: settings.searxngUrl,
         aiMode: settings.aiMode,
         loading: false,
         error: null,
@@ -129,6 +144,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       set({
         searchProvider: result.searchProvider,
         hasBraveApiKey: result.hasBraveApiKey,
+        hasTavilyApiKey: result.hasTavilyApiKey,
+        hasSerperApiKey: result.hasSerperApiKey,
+        searxngUrl: result.searxngUrl,
         aiMode: result.aiMode,
         error: null,
       });

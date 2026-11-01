@@ -83,7 +83,19 @@ where
             Ok(response) => {
                 let status = response.status();
                 if is_retryable_status(status) && attempt < policy.max_retries {
-                    let delay = retry_delay(policy, attempt);
+                    let mut delay = retry_delay(policy, attempt);
+                    // Rate limits need time to clear; rapid retries consume the
+                    // same constrained slot without giving other workers time.
+                    if status == StatusCode::TOO_MANY_REQUESTS {
+                        delay = delay.max(Duration::from_secs(5 * (1 << attempt.min(3))));
+                    }
+                    if let Some(seconds) = response.headers().get(reqwest::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok()) {
+                        // Surface long cooldowns instead of retrying before the
+                        // provider permits it or parking a worker indefinitely.
+                        if seconds > 60 { return Ok(response); }
+                        delay = delay.max(Duration::from_secs(seconds));
+                    }
                     tracing::warn!(
                         %status,
                         attempt = attempt + 1,

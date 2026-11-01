@@ -56,7 +56,7 @@ impl CloudAiProvider {
             return Err(AppError::CloudEntitlementRequired);
         }
         let limit = entitlements.limit("monthly_ai_credits");
-        if limit > 0 && entitlements.usage.monthly_ai_credits_used >= limit {
+        if limit <= 0 || entitlements.usage.monthly_ai_credits_used >= limit {
             return Err(AppError::CloudQuotaExceeded);
         }
         Ok(())

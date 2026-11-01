@@ -81,7 +81,8 @@ fn is_forbidden_ipv4(ip: Ipv4Addr) -> bool {
 }
 
 fn is_forbidden_ipv6(ip: Ipv6Addr) -> bool {
-    ip.is_loopback()
+    ip.to_ipv4_mapped().is_some_and(is_forbidden_ipv4)
+        || ip.is_loopback()
         || ip.is_unspecified()
         || ip.is_multicast()
         || is_unique_local(ip)
@@ -106,10 +107,15 @@ fn is_documentation_v6(ip: Ipv6Addr) -> bool {
 /// Resolve a hostname and reject every address that points at the local
 /// machine, a private network or a cloud metadata service.
 pub async fn validate_resolved(url: &Url) -> Result<(), AppError> {
+    resolved_addresses(url).await.map(|_| ())
+}
+
+async fn resolved_addresses(url: &Url) -> Result<Vec<std::net::SocketAddr>, AppError> {
     validate_url_syntax(url)?;
     let host = url
         .host_str()
-        .ok_or_else(|| AppError::InvalidInput("URL has no host".into()))?;
+        .ok_or_else(|| AppError::InvalidInput("URL has no host".into()))?
+        .trim_matches(['[', ']']);
     let port = url
         .port_or_known_default()
         .ok_or_else(|| AppError::InvalidInput("URL has no usable port".into()))?;
@@ -121,14 +127,15 @@ pub async fn validate_resolved(url: &Url) -> Result<(), AppError> {
                 "URL resolves to a blocked private or local address".into(),
             ));
         }
-        return Ok(());
+        return Ok(vec![std::net::SocketAddr::new(ip, port)]);
     }
 
-    let addresses = tokio::net::lookup_host((host, port))
+    let addresses: Vec<_> = tokio::net::lookup_host((host, port))
         .await
-        .map_err(|error| AppError::Network(format!("DNS resolution failed: {error}")))?;
+        .map_err(|error| AppError::Network(format!("DNS resolution failed: {error}")))?
+        .collect();
     let mut any = false;
-    for address in addresses {
+    for address in &addresses {
         any = true;
         if is_forbidden_ip(address.ip()) {
             return Err(AppError::InvalidInput(
@@ -141,7 +148,7 @@ pub async fn validate_resolved(url: &Url) -> Result<(), AppError> {
             "DNS resolution returned no addresses".into(),
         ));
     }
-    Ok(())
+    Ok(addresses)
 }
 
 fn allowed_content_type(content_type: Option<&str>) -> bool {
@@ -162,7 +169,7 @@ fn allowed_content_type(content_type: Option<&str>) -> bool {
 /// Fetch a URL with manual redirect handling. Every hop is validated again, so
 /// a public URL cannot redirect into `127.0.0.1` or cloud metadata.
 pub async fn fetch_safely(
-    client: &reqwest::Client,
+    _client: &reqwest::Client,
     start: &Url,
     policy: UrlSecurityPolicy,
 ) -> Result<FetchedUrl, AppError> {
@@ -170,9 +177,19 @@ pub async fn fetch_safely(
     let mut redirects = 0usize;
     loop {
         validate_url_syntax(&current)?;
-        validate_resolved(&current).await?;
-
-        let response = client
+        let addresses = resolved_addresses(&current).await?;
+        let host = current
+            .host_str()
+            .ok_or_else(|| AppError::InvalidInput("URL has no host".into()))?
+            .trim_matches(['[', ']']);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(host, &addresses)
+            .timeout(policy.timeout)
+            .build()
+            .map_err(|e| AppError::Network(e.to_string()))?;
+        let mut response = client
             .get(current.clone())
             .timeout(policy.timeout)
             .send()
@@ -220,17 +237,21 @@ pub async fn fetch_safely(
                 )));
             }
         }
-        let bytes = response
-            .bytes()
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|error| AppError::Network(error.to_string()))?;
-        if bytes.len() > policy.max_bytes {
-            return Err(AppError::InvalidInput("remote document too large".into()));
+            .map_err(|e| AppError::Network(e.to_string()))?
+        {
+            if chunk.len() > policy.max_bytes.saturating_sub(bytes.len()) {
+                return Err(AppError::InvalidInput("remote document too large".into()));
+            }
+            bytes.extend_from_slice(&chunk);
         }
         return Ok(FetchedUrl {
             final_url: current,
             content_type,
-            bytes: bytes.to_vec(),
+            bytes,
         });
     }
 }

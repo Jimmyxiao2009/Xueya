@@ -26,7 +26,11 @@ pub use learner::{
     blend_confidence, blend_mastery, next_review_interval_hours, schedule_next_review,
     KnowledgePoint, LearnerState,
 };
-pub use learning::{LearningAttempt, LearningSession, LearningSessionStatus, MasteryState};
+pub use learning::{
+    AgentAction, AgentActionKind, ConceptState, LearnerInference, LearnerResponse, LearningAttempt,
+    LearningMessageRecord, LearningSession, LearningSessionStatus, LearningTurn, MasteryEvidence,
+    MasteryState,
+};
 pub use plan::{LessonPhase, LessonStep, LessonStepKind};
 pub use provider::{AiMode, ProviderConfig, ProviderProtocol};
 pub use quiz::{grade_locally, QuizAttempt, QuizGrade, QuizKind, QuizQuestion};

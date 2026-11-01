@@ -91,7 +91,7 @@ async fn run_chat(
     let limit = resolve_entitlements(&state.pool, user_id)
         .await?
         .monthly_ai_credits();
-    let estimated_units = meta.estimated_input_tokens + (meta.max_tokens as i64).min(4096);
+    let estimated_units = meta.estimated_input_tokens + meta.max_tokens as i64;
     let reservation_id = reserve_ai_credits(
         &state,
         user_id,
@@ -261,6 +261,10 @@ fn stream_chat_response(
         while let Some(item) = upstream.next().await {
             match item {
                 Ok(chunk) => {
+                    if chunk.len() > (1024 * 1024usize).saturating_sub(sse_buffer.len()) {
+                        upstream_failed = true;
+                        break;
+                    }
                     sse_buffer.extend_from_slice(&chunk);
                     while let Some(position) = sse_buffer.iter().position(|byte| *byte == b'\n') {
                         let line = sse_buffer.drain(..=position).collect::<Vec<u8>>();
@@ -313,15 +317,39 @@ fn stream_chat_response(
             request_id,
             latency_ms: started.elapsed().as_millis() as i64,
         };
-        match commit_ai_usage(&state, user_id, reservation_id, actual_units, event).await {
-            Ok(()) => guard.disarm(),
-            Err(error) => {
-                tracing::error!(error = ?error, "failed to commit stream usage; reservation will be released");
+        for attempt in 0..3 {
+            match commit_ai_usage(&state, user_id, reservation_id, actual_units, event.clone()).await {
+                Ok(()) => { guard.disarm(); break; }
+                Err(error) => {
+                    tracing::error!(?error, attempt, "stream settlement failed; retaining reservation for reconciliation");
+                    tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt + 1))).await;
+                }
             }
         }
+
     };
 
-    let mut response = Body::from_stream(stream).into_response();
+    // Upstream consumption and settlement outlive a disconnected HTTP consumer.
+    let (sender, receiver) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move {
+        futures_util::pin_mut!(stream);
+        let mut sender = Some(sender);
+        while let Some(item) = stream.next().await {
+            // A slow or disconnected client must not prevent durable settlement.
+            if let Some(tx) = sender.as_ref() {
+                if !matches!(
+                    tokio::time::timeout(std::time::Duration::from_secs(5), tx.send(item)).await,
+                    Ok(Ok(()))
+                ) {
+                    sender = None;
+                }
+            }
+        }
+    });
+    let downstream = futures_util::stream::unfold(receiver, |mut receiver| async {
+        receiver.recv().await.map(|item| (item, receiver))
+    });
+    let mut response = Body::from_stream(downstream).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         header::HeaderValue::from_static("text/event-stream"),
@@ -378,16 +406,14 @@ fn check_rate_limit(state: &AppState, user_id: Uuid) -> Result<(), ApiError> {
 }
 
 struct ReservationGuard {
-    state: AppState,
     user_id: Uuid,
     reservation_id: Uuid,
     armed: bool,
 }
 
 impl ReservationGuard {
-    fn new(state: AppState, user_id: Uuid, reservation_id: Uuid) -> Self {
+    fn new(_state: AppState, user_id: Uuid, reservation_id: Uuid) -> Self {
         Self {
-            state,
             user_id,
             reservation_id,
             armed: true,
@@ -401,14 +427,8 @@ impl ReservationGuard {
 
 impl Drop for ReservationGuard {
     fn drop(&mut self) {
-        if !self.armed {
-            return;
+        if self.armed {
+            tracing::error!(user_id = %self.user_id, reservation_id = %self.reservation_id, "unsettled AI reservation retained for reconciliation");
         }
-        let state = self.state.clone();
-        let user_id = self.user_id;
-        let reservation_id = self.reservation_id;
-        tokio::spawn(async move {
-            let _ = release_ai_reservation(&state, user_id, reservation_id).await;
-        });
     }
 }

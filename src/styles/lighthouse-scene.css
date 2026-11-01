@@ -1,0 +1,275 @@
+/* Recovered from B:/学涯-backup-20260919/src/styles/lighthouse.css.
+ * Original homepage/primitives only; scoped to the Lighthouse motif. */
+/* Lighthouse atmosphere: shared primitives, first composed by Home. */
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home {
+  --sea-deep: #0d1419;
+  --sea-surface: #182329;
+  --sea-text: #e5e7e2;
+  --sea-muted: #a4b0b2;
+  --sea-light: #e4cc9d;
+  background: linear-gradient(165deg, #111b22 0%, var(--sea-deep) 55%, #10191e 100%);
+}
+
+:root[data-motif="lighthouse"][data-theme] .header-wordmark {
+  position: relative;
+  z-index: 1;
+  color: #a6b1b3;
+  font: 19px Georgia, serif;
+  letter-spacing: -.8px;
+}
+:root[data-motif="lighthouse"][data-theme] .header-wordmark span { color: var(--light); }
+:root[data-motif="lighthouse"][data-theme] .app-header .subject-switch:hover .subject-name { color: var(--text); }
+
+:root[data-motif="lighthouse"][data-theme] .knowledge-sea { position: relative; isolation: isolate; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .roadhead { position: relative; z-index: 2; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .roadhead h2 { color: #bac4c5; font-size: 13px; letter-spacing: .06em; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .roadhead > span { color: #8f9fa4; font-size: 11px; }
+
+/* Atmospheric depth is formed by broad, irregular overlaps, never noise or particles. */
+:root[data-motif="lighthouse"][data-theme] .atmosphere {
+  --fog-alpha: .12;
+  position: absolute;
+  inset: 0 -25px;
+  pointer-events: none;
+  z-index: -1;
+  overflow: hidden;
+}
+:root[data-motif="lighthouse"][data-theme] .atmosphere[data-density="light"] { --fog-alpha: .07; }
+:root[data-motif="lighthouse"][data-theme] .atmosphere[data-density="dense"] { --fog-alpha: .19; }
+:root[data-motif="lighthouse"][data-theme] .atmosphere > div { position: absolute; inset: 0; pointer-events: none; }
+:root[data-motif="lighthouse"][data-theme] .atmosphere-distance {
+  background:
+    radial-gradient(ellipse 95% 300px at 105% 16%, rgba(var(--atmosphere-haze), calc(var(--fog-alpha) * .9)), transparent 76%),
+    radial-gradient(ellipse 100% 340px at -20% 49%, rgba(var(--atmosphere-haze), var(--fog-alpha)), transparent 74%),
+    radial-gradient(ellipse 90% 340px at 105% 84%, rgba(var(--atmosphere-haze), calc(var(--fog-alpha) * 1.05)), transparent 75%);
+}
+:root[data-motif="lighthouse"][data-theme] .atmosphere-ambient {
+  background: radial-gradient(ellipse 65% 270px at 50% 12%, rgba(220, 201, 161, .055), transparent 74%);
+}
+:root[data-motif="lighthouse"][data-theme] .atmosphere-fog--far {
+  background:
+    radial-gradient(ellipse 88% 180px at 30% 27%, rgba(var(--atmosphere-haze), calc(var(--fog-alpha) * .65)), transparent 77%),
+    radial-gradient(ellipse 100% 220px at 80% 60%, rgba(var(--atmosphere-haze), calc(var(--fog-alpha) * .52)), transparent 78%),
+    radial-gradient(ellipse 100% 190px at 15% 93%, rgba(var(--atmosphere-haze), calc(var(--fog-alpha) * .72)), transparent 78%);
+  animation: sea-drift 32s ease-in-out infinite alternate;
+}
+:root[data-motif="lighthouse"][data-theme] .atmosphere-fog--near {
+  background:
+    radial-gradient(ellipse 112% 138px at 52% 36%, rgba(94, 122, 135, calc(var(--fog-alpha) * .42)), transparent 79%),
+    radial-gradient(ellipse 124% 160px at 49% 74%, rgba(92, 119, 131, calc(var(--fog-alpha) * .48)), transparent 80%);
+  filter: blur(12px);
+  animation: sea-drift 42s -11s ease-in-out infinite alternate-reverse;
+}
+:root[data-motif="lighthouse"][data-theme] .atmosphere-edge {
+  background: linear-gradient(90deg, rgba(8, 14, 18, .36), transparent 22%, transparent 80%, rgba(8, 14, 18, .3));
+}
+
+/* A real scene anchor, separate from the navigation header. */
+:root[data-motif="lighthouse"][data-theme] .lighthouse-origin { position: relative; height: 172px; margin-top: 10px; isolation: isolate; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .lighthouse-origin > .beacon { position: absolute; left: 50%; top: 4px; transform: translateX(-42%); }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-origin > .focus-glow { left: 50%; top: 56px; }
+:root[data-motif="lighthouse"][data-theme] .origin-caption { position: absolute; z-index: 1; left: calc(50% + 49px); top: 63px; right: 0; }
+:root[data-motif="lighthouse"][data-theme] .origin-caption > span { display: block; color: #c1cac7; font-size: 11px; letter-spacing: .08em; }
+:root[data-motif="lighthouse"][data-theme] .origin-caption > small { display: block; margin-top: 8px; color: #8d9c9e; font-size: 10px; }
+
+/* The PNG is 480 × 1378. Its lantern centre is (200, 290).
+ * Every glow uses that same origin, even when the tower is resized.
+ * A dim monochrome body plus a masked copy of the original lantern prevents
+ * warm windows appearing in unknown nodes. No replacement artwork is used.
+ */
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon {
+  --tower-height: 84px;
+  --lamp-x: 41.7%;
+  --lamp-y: 21%;
+  --lamp-strength: 0;
+  position: relative;
+  display: block;
+  width: calc(var(--tower-height) * 480 / 1378);
+  height: var(--tower-height);
+  pointer-events: none;
+}
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-tower {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: grayscale(1) brightness(.48) sepia(.12) hue-rotate(145deg);
+  opacity: .8;
+  mask-image: linear-gradient(#000 72%, transparent 96%);
+  transition: filter 1.5s ease, opacity 1.5s ease;
+}
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-lantern {
+  position: absolute;
+  inset: 0;
+  background: var(--beacon-image) center / 100% 100% no-repeat;
+  mask-image: radial-gradient(ellipse 25% 5.8% at var(--lamp-x) var(--lamp-y), #000 65%, transparent 100%);
+  opacity: var(--lamp-strength);
+  transition: opacity 1.2s ease;
+}
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-halo {
+  position: absolute;
+  left: var(--lamp-x);
+  top: var(--lamp-y);
+  width: 134px;
+  height: 126px;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(ellipse, rgba(235, 209, 160, .23), rgba(222, 194, 144, .07) 35%, transparent 70%);
+  opacity: var(--lamp-strength);
+  transition: opacity 1.8s .2s ease;
+}
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-ground {
+  position: absolute;
+  left: 42%;
+  top: 83%;
+  width: 82px;
+  height: 23px;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(ellipse, rgba(146, 168, 172, .13), transparent 70%);
+}
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon--lit { --lamp-strength: 1; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon--lit .beacon-tower { filter: grayscale(.3) brightness(.85); opacity: 1; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon--current { --lamp-strength: .32; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon--current .beacon-tower { filter: grayscale(.8) brightness(.88); opacity: 1; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon--current .beacon-halo { width: 180px; height: 150px; opacity: .75; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon--review { --lamp-strength: .12; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon--review .beacon-tower { filter: grayscale(.9) brightness(.57); }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon--primary { --tower-height: 148px; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon--primary .beacon-tower { filter: grayscale(.2) brightness(.95); }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon--primary .beacon-halo { width: 330px; height: 230px; opacity: .82; }
+
+/* Focus glow is a bounded radial falloff; it never becomes a visible light cone. */
+:root[data-motif="lighthouse"][data-theme] .focus-glow {
+  position: absolute;
+  z-index: -1;
+  left: var(--clearing-x, 50%);
+  top: 50%;
+  width: 240px;
+  height: 168px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(225, 205, 163, .13), rgba(160, 178, 174, .055) 37%, transparent 73%);
+  pointer-events: none;
+}
+:root[data-motif="lighthouse"][data-theme] .focus-glow--soft { opacity: .62; }
+:root[data-motif="lighthouse"][data-theme] .focus-glow--strong { opacity: 1; width: 300px; height: 220px; }
+
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .road { margin-top: 0; background: none; isolation: isolate; }
+:root[data-motif="lighthouse"][data-theme] .sea-water {
+  position: absolute;
+  inset: -24px -28px;
+  z-index: -1;
+  pointer-events: none;
+  opacity: .72;
+  background:
+    radial-gradient(ellipse 104px 13px at 21% 12%, transparent 57%, rgba(165, 190, 195, .13) 60%, transparent 66%),
+    radial-gradient(ellipse 82px 10px at 25% 13%, transparent 57%, rgba(165, 190, 195, .09) 60%, transparent 66%),
+    radial-gradient(ellipse 128px 15px at 78% 30%, transparent 57%, rgba(165, 190, 195, .1) 60%, transparent 66%),
+    radial-gradient(ellipse 84px 11px at 76% 31%, transparent 56%, rgba(165, 190, 195, .08) 60%, transparent 66%),
+    radial-gradient(ellipse 120px 14px at 23% 60%, transparent 57%, rgba(165, 190, 195, .1) 60%, transparent 66%),
+    radial-gradient(ellipse 150px 15px at 78% 88%, transparent 57%, rgba(165, 190, 195, .11) 60%, transparent 66%);
+  mask-image: linear-gradient(to bottom, transparent, #000 7%, #000 93%, transparent);
+  animation: tide-shift 34s ease-in-out infinite alternate;
+}
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .path { top: 30px; z-index: 0; animation: none; overflow: visible; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .path path {
+  stroke: rgba(160, 182, 192, .18);
+  stroke-width: 1;
+  stroke-dasharray: 2 7;
+  vector-effect: non-scaling-stroke;
+}
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .path .completed-path {
+  stroke: rgba(218, 198, 158, .52);
+  stroke-width: 1.1;
+  stroke-dasharray: none;
+  filter: drop-shadow(0 0 4px rgba(231, 207, 158, .22));
+}
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .path .approaching-path {
+  stroke: rgba(234, 213, 173, .77);
+  stroke-width: 1.3;
+  stroke-dasharray: 2 5;
+  filter: drop-shadow(0 0 5px rgba(231, 207, 158, .28));
+}
+:root[data-motif="lighthouse"][data-theme] .origin-path { position: absolute; left: 0; top: -18px; width: 100%; height: 116px; overflow: visible; pointer-events: none; }
+:root[data-motif="lighthouse"][data-theme] .origin-path path { fill: none; stroke: rgba(218, 198, 158, .25); stroke-width: 1; stroke-dasharray: 2 6; vector-effect: non-scaling-stroke; }
+
+/* Each node clears its own pocket of fog; text always paints above it. */
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-stop { isolation: isolate; z-index: 1; --clearing-x: 17%; animation: node-arrive .85s var(--spring) both; animation-delay: var(--delay); }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-stop.on-right { --clearing-x: 83%; }
+:root[data-motif="lighthouse"][data-theme] .node-atmosphere { position: absolute; inset: -76px -64px; pointer-events: none; z-index: -1; filter: blur(9px); }
+:root[data-motif="lighthouse"][data-theme] .node-atmosphere::before, :root[data-motif="lighthouse"][data-theme] .node-atmosphere::after { content: ''; position: absolute; inset: 0; transition: opacity 2s .25s ease; }
+:root[data-motif="lighthouse"][data-theme] .node-atmosphere::before {
+  background: radial-gradient(ellipse 144px 94px at var(--clearing-x) 52%, rgba(129, 153, 165, .28), rgba(92, 118, 131, .12) 42%, transparent 76%);
+  opacity: .86;
+}
+:root[data-motif="lighthouse"][data-theme] .node-atmosphere::after {
+  background: radial-gradient(ellipse 170px 110px at var(--clearing-x) 48%, rgba(226, 205, 162, .13), transparent 76%);
+  opacity: 0;
+}
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-stop[data-beacon-state="unlit"] .node-atmosphere::before { opacity: 1; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-stop[data-beacon-state="review"] .node-atmosphere::before { opacity: .92; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-stop[data-beacon-state="lit"] .node-atmosphere::before { opacity: .1; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-stop[data-beacon-state="lit"] .node-atmosphere::after { opacity: .6; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-stop[data-beacon-state="current"] .node-atmosphere::before { opacity: .22; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-stop[data-beacon-state="current"] .node-atmosphere::after { opacity: 1; }
+
+/* Keep the established hit targets and lesson transition anchors, lose toy blocks. */
+:root[data-motif="lighthouse"][data-theme][data-icons="lighthouse"] .lighthouse-home .node-hit .node {
+  width: 64px;
+  height: 84px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  transform: none;
+  opacity: 1;
+  animation: none;
+  filter: none;
+}
+:root[data-motif="lighthouse"][data-theme][data-icons="lighthouse"] .lighthouse-home .node.current::before, :root[data-motif="lighthouse"][data-theme][data-icons="lighthouse"] .lighthouse-home .node-orbit { display: none; }
+:root[data-motif="lighthouse"][data-theme][data-icons="lighthouse"] .lighthouse-home .node-hit:hover .node { scale: 1; filter: brightness(1.12); }
+:root[data-motif="lighthouse"][data-theme][data-icons="lighthouse"] .lighthouse-home .node-hit:active .node { box-shadow: none; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .stop-info, :root[data-motif="lighthouse"][data-theme] .lighthouse-home .stop:has(.node.review) .stop-info { opacity: 1; }
+:root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .lighthouse-home .beacon-label { display: block; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .info-face:not(.now-card) { padding: 12px 0; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .stop-info h3 { color: #b5c1c4; font-size: 16px; font-weight: 400; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .stop-info p { color: #92a1a6; font-size: 11px; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .tag { display: flex; align-items: center; gap: 5px; color: #96a7ac; font-size: 10px; letter-spacing: .05em; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .tag .icon { width: 11px; height: 11px; flex-shrink: 0; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home [data-beacon-state="lit"] h3 { color: #d4d8d3; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home [data-beacon-state="lit"] .tag { color: #b9ad94; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .info-face.now-card {
+  background: linear-gradient(110deg, rgba(214, 193, 148, .085), rgba(130, 155, 166, .025));
+  border: 1px solid rgba(225, 208, 170, .12);
+  border-radius: 12px;
+  padding: 14px 26px 14px 14px;
+  box-shadow: none;
+}
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .now-card h3 { color: #eee9da; font-size: 18px; font-weight: 500; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .now-card .tag { color: #dfcda7; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .now-card p { color: #b4bcb7; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .next-arrow { background: none; color: #e3d0a9; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .next-arrow .icon { animation: none; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .stop-info:hover .info-face { scale: 1; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .stop-info:hover h3 { color: #eee9da; }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .endnote { color: #9baaae; gap: 10px; font-size: 11px; }
+:root[data-motif="lighthouse"][data-theme] .horizon-mark { display: inline-block; width: 26px; height: 1px; background: linear-gradient(90deg, transparent, #8e9fa3, transparent); }
+:root[data-motif="lighthouse"][data-theme] .lighthouse-home .home-footer { position: relative; color: #8b9b9e; border-top-color: rgba(173, 189, 194, .09); }
+
+@keyframes sea-drift { from { transform: translate3d(-10px, -5px, 0); opacity: .7; } to { transform: translate3d(12px, 8px, 0); opacity: 1; } }
+@keyframes tide-shift { from { transform: translate3d(-7px, -3px, 0); opacity: .52; } to { transform: translate3d(9px, 4px, 0); opacity: .84; } }
+@media (min-width: 600px) { :root[data-motif="lighthouse"][data-theme] #root:has(.lighthouse-home) { border-color: rgba(158, 180, 191, .08); } }
+@media (max-width: 360px) {
+  :root[data-motif="lighthouse"][data-theme] .origin-caption { left: calc(50% + 29px); }
+  :root[data-motif="lighthouse"][data-theme] .origin-caption > span { font-size: 10px; letter-spacing: 0; }
+  :root[data-motif="lighthouse"][data-theme] .origin-caption > small { font-size: 9px; }
+  :root[data-motif="lighthouse"][data-theme] .lighthouse-home .stop-info h3 { font-size: 14px; }
+  :root[data-motif="lighthouse"][data-theme] .lighthouse-home .now-card h3 { font-size: 16px; }
+  :root[data-motif="lighthouse"][data-theme] .lighthouse-home .info-face.now-card { padding: 12px 23px 12px 11px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-motif="lighthouse"][data-theme] .atmosphere-fog, :root[data-motif="lighthouse"][data-theme] .sea-water { animation: none; }
+  :root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon-stop { animation: none; }
+  :root:is([data-motif="lighthouse"], [data-icons="lighthouse"])[data-theme] .beacon *, :root[data-motif="lighthouse"][data-theme] .node-atmosphere::before, :root[data-motif="lighthouse"][data-theme] .node-atmosphere::after { transition: none; }
+}
+:root[data-motif="lighthouse"][data-theme] .roadmap-is-open .atmosphere-fog, :root[data-motif="lighthouse"][data-theme] .roadmap-is-open .sea-water, :root[data-motif="lighthouse"][data-theme] .motion-lite .atmosphere-fog, :root[data-motif="lighthouse"][data-theme] .motion-lite .sea-water { animation-play-state: paused; }
+

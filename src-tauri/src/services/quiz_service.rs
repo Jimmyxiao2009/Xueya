@@ -13,7 +13,7 @@ use crate::util::time::utc_now;
 use uuid::Uuid;
 
 /// Everything that happened as a result of one submitted answer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QuizOutcome {
     pub grade: QuizGrade,
     pub node_id: Uuid,
@@ -48,6 +48,23 @@ impl<'a> QuizService<'a> {
         answers: Vec<String>,
         session_id: Option<Uuid>,
     ) -> Result<QuizOutcome, AppError> {
+        let operation_key = format!(
+            "quiz_service:{}",
+            crate::util::hashing::sha256_text(
+                &serde_json::to_string(&(question_id, session_id, &answers))
+                    .map_err(|e| AppError::Internal(e.to_string()))?
+            )
+        );
+        if let Some(saved) = sqlx::query_scalar::<_, String>(
+            "SELECT payload_json FROM learning_outcomes WHERE operation_key = ?",
+        )
+        .bind(&operation_key)
+        .fetch_optional(&self.state.pool)
+        .await?
+        {
+            return serde_json::from_str(&saved).map_err(|e| AppError::Internal(e.to_string()));
+        }
+
         let question = loop_repo::get_quiz_question(&self.state.pool, question_id).await?;
         let node = course_repo::get_node(&self.state.pool, question.node_id).await?;
         let course = course_repo::get_course(&self.state.pool, node.course_id).await?;
@@ -83,6 +100,16 @@ impl<'a> QuizService<'a> {
             None => self.tutor_grade(&node, &question, &answers).await?,
         };
 
+        let mut tx = self.state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(saved) = sqlx::query_scalar::<_, String>(
+            "SELECT payload_json FROM learning_outcomes WHERE operation_key = ?",
+        )
+        .bind(&operation_key)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            return serde_json::from_str(&saved).map_err(|e| AppError::Internal(e.to_string()));
+        }
         // ---- learner model -------------------------------------------------
         let point_id = question.knowledge_point_id.or_else(|| {
             serde_json::from_str::<serde_json::Value>(&node.metadata_json)
@@ -92,7 +119,7 @@ impl<'a> QuizService<'a> {
         });
         let now = utc_now();
         let mut learner = match point_id {
-            Some(point_id) => loop_repo::get_learner_state(&self.state.pool, course.id, point_id)
+            Some(point_id) => loop_repo::get_learner_state_tx(&mut *tx, course.id, point_id)
                 .await?
                 .unwrap_or_else(|| LearnerState::fresh(course.id, point_id)),
             None => LearnerState::fresh(course.id, Uuid::nil()),
@@ -115,12 +142,12 @@ impl<'a> QuizService<'a> {
         learner.next_review = Some(schedule_next_review(now, learner.mastery, learner.mistakes));
         learner.updated_at = now;
         if point_id.is_some() {
-            loop_repo::upsert_learner_state(&self.state.pool, &learner).await?;
+            loop_repo::upsert_learner_state_tx(&mut *tx, &learner).await?;
         }
-        course_repo::update_node_confidence(&self.state.pool, node.id, learner.mastery).await?;
+        course_repo::update_node_confidence_tx(&mut *tx, node.id, learner.mastery).await?;
 
-        loop_repo::insert_quiz_attempt(
-            &self.state.pool,
+        loop_repo::insert_quiz_attempt_tx(
+            &mut *tx,
             &QuizAttempt {
                 id: Uuid::new_v4(),
                 question_id: question.id,
@@ -155,13 +182,13 @@ impl<'a> QuizService<'a> {
                 },
             );
             let outcome = crate::services::adaptation_service::AdaptationService::new(self.state)
-                .apply(course.id, node.id, &diagnosis)
+                .apply_tx(&mut *tx, course.id, node.id, &diagnosis)
                 .await?;
             adaptation = outcome.event;
             inserted_node_id = outcome.inserted_node_id;
         }
 
-        Ok(QuizOutcome {
+        let outcome = QuizOutcome {
             grade,
             node_id: node.id,
             course_id: course.id,
@@ -171,7 +198,14 @@ impl<'a> QuizService<'a> {
             adaptation,
             inserted_node_id,
             authoritative,
-        })
+        };
+        sqlx::query("INSERT INTO learning_outcomes (operation_key, payload_json) VALUES (?, ?)")
+            .bind(&operation_key)
+            .bind(serde_json::to_string(&outcome).map_err(|e| AppError::Internal(e.to_string()))?)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(outcome)
     }
 
     /// Subjective widgets are judged by the tutor model. When the offline

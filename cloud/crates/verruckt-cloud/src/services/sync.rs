@@ -108,6 +108,10 @@ async fn push_one(
     let validated = validate_change_payload(&change)?;
 
     let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
 
     if let Some(existing) = sqlx::query_as::<_, (String, Uuid, i64, String)>(
         "SELECT entity_type, entity_id, revision, operation FROM sync_changes WHERE user_id = $1 AND change_id = $2",
@@ -293,19 +297,31 @@ pub async fn bootstrap(
     cursor: Option<&str>,
     limit: Option<i64>,
 ) -> Result<SyncBootstrapResponse, ApiError> {
-    let offset = match cursor {
-        Some(value) if !value.trim().is_empty() => decode_cursor(value)?,
-        _ => 0,
+    let (offset, watermark): (i64, i64) = match cursor {
+        Some(value) if !value.trim().is_empty() => {
+            let bytes = URL_SAFE_NO_PAD
+                .decode(value)
+                .map_err(|_| ApiError::bad_request("invalid_cursor", "invalid bootstrap cursor"))?;
+            serde_json::from_slice(&bytes)
+                .map_err(|_| ApiError::bad_request("invalid_cursor", "invalid bootstrap cursor"))?
+        }
+        _ => (0, max_cursor(&state.pool, user_id).await?),
     };
+    if offset < 0 || watermark < 0 {
+        return Err(ApiError::bad_request(
+            "invalid_cursor",
+            "bootstrap cursor cannot be negative",
+        ));
+    }
     let limit = limit
         .unwrap_or(DEFAULT_BOOTSTRAP_LIMIT)
         .clamp(1, MAX_BOOTSTRAP_LIMIT);
 
     let rows = sqlx::query_as::<_, SnapshotRow>(
         r#"
-        SELECT entity_type, entity_id, revision, deleted, payload, updated_at
-        FROM sync_entities
-        WHERE user_id = $1
+        SELECT entity_type, entity_id, revision, operation = 'delete' AS deleted, payload, created_at AS updated_at
+        FROM (SELECT DISTINCT ON (entity_type, entity_id) * FROM sync_changes
+          WHERE user_id = $1 AND cursor <= $4 ORDER BY entity_type, entity_id, cursor DESC) snapshot
         ORDER BY entity_type ASC, entity_id ASC
         OFFSET $2
         LIMIT $3
@@ -314,6 +330,7 @@ pub async fn bootstrap(
     .bind(user_id)
     .bind(offset)
     .bind(limit + 1)
+    .bind(watermark)
     .fetch_all(&state.pool)
     .await?;
 
@@ -324,8 +341,11 @@ pub async fn bootstrap(
         rows
     };
 
-    let next_cursor = encode_cursor(offset + rows.len() as i64);
-    let sync_cursor = encode_cursor(max_cursor(&state.pool, user_id).await?);
+    let next_cursor = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&(offset + rows.len() as i64, watermark))
+            .map_err(|_| ApiError::bad_request("invalid_cursor", "invalid bootstrap cursor"))?,
+    );
+    let sync_cursor = encode_cursor(watermark);
 
     let entities = rows
         .into_iter()

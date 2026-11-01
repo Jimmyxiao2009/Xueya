@@ -78,16 +78,19 @@ impl VerrucktVectorStoreAdapter {
         }
         let spaces = Arc::clone(&self.spaces);
         let root = self.root.clone();
-        let key_for_open = key.clone();
-        let opened = spawn_blocking(move || open_or_create_space(&root, key_for_open))
-            .await
-            .map_err(|error| AppError::Internal(format!("vector open task failed: {error}")))??;
-        let opened = Arc::new(Mutex::new(opened));
-        let mut guard = spaces.lock();
-        Ok(guard
-            .entry(key)
-            .or_insert_with(|| Arc::clone(&opened))
-            .clone())
+        spawn_blocking(move || {
+            // Serialize opening too: two first users must never create separate
+            // writable engine handles for the same directory.
+            let mut guard = spaces.lock();
+            if let Some(existing) = guard.get(&key) {
+                return Ok(Arc::clone(existing));
+            }
+            let opened = Arc::new(Mutex::new(open_or_create_space(&root, key.clone())?));
+            guard.insert(key, Arc::clone(&opened));
+            Ok::<_, AppError>(opened)
+        })
+        .await
+        .map_err(|error| AppError::Internal(format!("vector open task failed: {error}")))?
     }
 
     async fn space_for_vector(
@@ -123,6 +126,7 @@ impl VerrucktVectorStoreAdapter {
     }
 
     async fn rebuild_from_sqlite(&self) -> Result<(), AppError> {
+        let _lifecycle = self.lifecycle.write().await;
         let records = load_all_embeddings(&self.pool).await?;
         let mut grouped: HashMap<SpaceKey, Vec<(Uuid, Vec<f32>)>> = HashMap::new();
         for record in records {
@@ -139,26 +143,33 @@ impl VerrucktVectorStoreAdapter {
                 .push((record.chunk_id, record.vector));
         }
 
-        // Drop mapped handles; the incremental pass below reopens what it
-        // reuses. Startup therefore *verifies* valid indexes instead of
-        // rewriting every derived directory.
+        // SQLite is authoritative. Counts cannot detect changed vectors or IDs.
+        // Drop mapped handles, then discard only managed hash-named directories,
+        // including spaces no longer present in SQLite. A failed rebuild can be
+        // retried from SQLite without calling the provider.
         self.spaces.lock().clear();
+        let root = self.root.clone();
+        spawn_blocking(move || {
+            for entry in std::fs::read_dir(&root)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.len() == 64
+                    && name.bytes().all(|b| b.is_ascii_hexdigit())
+                    && entry.file_type()?.is_dir()
+                {
+                    std::fs::remove_dir_all(entry.path())?;
+                }
+            }
+            Ok::<_, AppError>(())
+        })
+        .await
+        .map_err(|error| AppError::Internal(format!("vector cleanup task failed: {error}")))??;
         for (key, records) in grouped {
             let root = self.root.clone();
             let build_key = key.clone();
             let space = spawn_blocking(move || {
                 let path = root.join(build_key.directory_name());
-                // Reuse an existing valid generation when its live count
-                // already matches SQLite; only missing/corrupt/stale spaces
-                // are rebuilt from the authoritative embeddings.
-                if let Ok(index) = EngineIndex::open(&path) {
-                    if let Ok(stats) = index.stats() {
-                        if stats.live_count as usize == records.len() {
-                            return Ok::<Space, AppError>(Space { index });
-                        }
-                    }
-                }
-                let _ = std::fs::remove_dir_all(&path);
                 std::fs::create_dir_all(&path)?;
                 let index = EngineIndex::create(&path, engine_config(build_key.dimension))
                     .map_err(engine_error)?;
@@ -184,14 +195,20 @@ impl VerrucktVectorStoreAdapter {
         key: SpaceKey,
         query: &[f32],
         limit: usize,
+        scan_all: bool,
     ) -> Result<Vec<VectorSearchResult>, AppError> {
         let space = self.open_space(key).await?;
         let query = query.to_vec();
         spawn_blocking(move || {
-            let hits = space
-                .lock()
+            let guard = space.lock();
+            let candidates = if scan_all {
+                guard.index.stats().map_err(engine_error)?.live_count as usize
+            } else {
+                limit
+            };
+            let hits = guard
                 .index
-                .search(&query, limit.max(1))
+                .search(&query, candidates.max(1))
                 .map_err(engine_error)?;
             Ok(hits
                 .into_iter()
@@ -303,9 +320,9 @@ impl VectorIndex for VerrucktVectorStoreAdapter {
         // Exact is intentional here: the production trait accepts an arbitrary
         // chunk-ID set, which cannot be represented by typed metadata
         // predicates without losing route/evidence correctness.
-        let overfetch = allowed_chunk_ids
-            .map(|ids| ids.len().max(limit).max(1))
-            .unwrap_or(limit.clamp(1, 100));
+        if allowed_chunk_ids.is_some_and(|ids| ids.is_empty()) {
+            return Ok(Vec::new());
+        }
         let hits = self
             .search_space(
                 SpaceKey {
@@ -314,7 +331,8 @@ impl VectorIndex for VerrucktVectorStoreAdapter {
                     dimension: query.len(),
                 },
                 query,
-                overfetch,
+                limit.clamp(1, 100),
+                allowed_chunk_ids.is_some(),
             )
             .await?;
         Ok(hits
@@ -337,6 +355,7 @@ impl VectorIndex for VerrucktVectorStoreAdapter {
     }
 
     async fn info(&self) -> Option<super::vector_index::VectorBackendStats> {
+        let _lifecycle = self.lifecycle.read().await;
         // Aggregate over the open spaces; a desktop app normally has one.
         let first = self.spaces.lock().values().next().cloned();
         let first = first?;

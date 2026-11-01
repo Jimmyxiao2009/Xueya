@@ -163,11 +163,7 @@ fn serve_one(
 ) {
     let _ = stream.set_nonblocking(false);
     let request = read_request(&mut stream);
-    let request_line = String::from_utf8_lossy(&request)
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_owned();
+    let request_line = String::from_utf8_lossy(&request).into_owned();
     requests.lock().expect("requests lock").push(request_line);
 
     let response = queue
@@ -203,7 +199,7 @@ fn serve_one(
 
 fn user_body() -> serde_json::Value {
     json!({
-        "id": Uuid::new_v4(),
+        "id": Uuid::from_u128(0x1234),
         "email": "e2e@example.com",
         "display_name": null,
         "created_at": "2026-01-01T00:00:00Z"
@@ -298,6 +294,35 @@ async fn logged_in_client_with_secrets(
 
 async fn logged_in_client(server: &MockServer) -> Arc<CloudAccountClient> {
     logged_in_client_with_secrets(server).await.0
+}
+
+#[tokio::test]
+async fn registry_reports_cloud_unavailable_without_silent_fallback() {
+    use verruckt_lib::ai::registry::ProviderRegistry;
+    for (official, used, limit) in [(false, 0, 1000), (true, 10, 10)] {
+        let server = MockServer::start(vec![
+            MockResponse::json(200, auth_body("access-1", "refresh-1")),
+            MockResponse::json(200, json!({ "user": user_body() }).to_string()),
+            MockResponse::json(200, entitlements_body(official, used, limit)),
+        ]);
+        let client = logged_in_client(&server).await;
+        let (state, _dir) = test_pool().await;
+        sqlx::query(r#"INSERT INTO app_settings(key,value_json,updated_at) VALUES ('ai_provider_mode','"cloud"',?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json"#)
+            .bind(chrono::Utc::now().to_rfc3339()).execute(&state.pool).await.unwrap();
+        let registry = ProviderRegistry::new(state.pool.clone(), reqwest::Client::new(), Arc::new(InMemorySecretStore::new())).with_cloud(client);
+
+        // Cloud mode must fail loudly instead of quietly becoming the
+        // deterministic offline provider when entitlement or quota is missing.
+        let error = registry
+            .default_chat_provider()
+            .await
+            .err()
+            .expect("cloud mode without entitlement must fail");
+        assert!(error
+            .to_string()
+            .contains("Cloud AI is temporarily unavailable"));
+        assert!(registry.is_mock_active().await.is_err());
+    }
 }
 
 #[tokio::test]
@@ -821,3 +846,129 @@ fn _assert_secret_ref_is_public() {
     // Keeps the REFRESH_TOKEN_REF import meaningful if the test body changes.
     let _ = REFRESH_TOKEN_REF;
 }
+
+#[tokio::test]
+async fn logout_authenticates_revocation_and_resets_sync_session() {
+    let server = MockServer::start(vec![
+        MockResponse::json(200, auth_body("access-a", "refresh-a")),
+        MockResponse::json(200, json!({"user":user_body()}).to_string()),
+        MockResponse::json(200, entitlements_body(true, 0, 10000)),
+        MockResponse::json(200, "{}"),
+    ]);
+    let (s, _dir) = test_pool().await;
+    let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
+    let client = CloudAccountClient::new(
+        reqwest::Client::new(),
+        secrets.clone(),
+        s.pool.clone(),
+        server.base_url(),
+    );
+    client
+        .login("a@example.com".into(), "password123".into())
+        .await
+        .unwrap();
+    assert!(client.device_id().await.unwrap().is_some());
+    sqlx::query("UPDATE sync_state SET account_id='account-A',cursor='A-cursor',bootstrap_done=1 WHERE id=1").execute(&s.pool).await.unwrap();
+    client.logout().await.unwrap();
+    let requests = server.requests();
+    let logout = requests
+        .iter()
+        .find(|r| r.contains("/auth/logout"))
+        .unwrap();
+    assert!(logout
+        .to_ascii_lowercase()
+        .contains("authorization: bearer access-a"));
+    assert!(client.device_id().await.unwrap().is_none());
+    let cursor: String = sqlx::query_scalar("SELECT cursor FROM sync_state WHERE id=1")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(cursor, "");
+    assert!(!secrets.secret_exists(REFRESH_TOKEN_REF).await.unwrap());
+    let owner: Option<String> =
+        sqlx::query_scalar("SELECT value_json FROM app_settings WHERE key='cloud_profile_owner'")
+            .fetch_optional(&s.pool)
+            .await
+            .unwrap();
+    assert!(owner.is_some(), "profile ownership survives sign out");
+}
+
+#[tokio::test]
+async fn switching_account_cannot_reuse_the_previous_profiles_sync_data() {
+    let mut other_auth: serde_json::Value =
+        serde_json::from_str(&auth_body("other-access", "other-refresh")).unwrap();
+    other_auth["user"]["id"] = json!(Uuid::from_u128(0x5678));
+    other_auth["user"]["email"] = json!("other@example.com");
+    let server = MockServer::start(vec![
+        MockResponse::json(200, auth_body("access-a", "refresh-a")),
+        MockResponse::json(200, json!({"user": user_body()}).to_string()),
+        MockResponse::json(200, entitlements_body(true, 0, 10000)),
+        MockResponse::json(200, "{}"),
+        MockResponse::json(200, other_auth.to_string()),
+    ]);
+    let (state, _dir) = test_pool().await;
+    let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
+    let client = CloudAccountClient::new(
+        reqwest::Client::new(),
+        secrets.clone(),
+        state.pool.clone(),
+        server.base_url(),
+    );
+    client
+        .login("e2e@example.com".into(), "password123".into())
+        .await
+        .unwrap();
+    client.logout().await.unwrap();
+    assert!(matches!(
+        client
+            .login("other@example.com".into(), "password123".into())
+            .await,
+        Err(AppError::CloudAuth(_))
+    ));
+    assert!(!secrets.secret_exists(REFRESH_TOKEN_REF).await.unwrap());
+    assert!(client.device_id().await.unwrap().is_none());
+    assert!(!client.account_state().await.unwrap().logged_in);
+}
+
+#[tokio::test]
+async fn first_eligible_login_enables_sync_and_explicit_disable_is_respected() {
+    let server = MockServer::start(vec![
+        MockResponse::json(200, auth_body("access-1", "refresh-1")),
+        MockResponse::json(200, json!({ "user": user_body() }).to_string()),
+        MockResponse::json(200, entitlements_body(true, 0, 10000)),
+        MockResponse::json(200, auth_body("access-2", "refresh-2")),
+    ]);
+    let (state, _dir) = test_pool().await;
+    let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
+    let client = CloudAccountClient::new(
+        reqwest::Client::new(),
+        secrets,
+        state.pool.clone(),
+        server.base_url(),
+    );
+
+    let account = client
+        .login("e2e@example.com".into(), "password123".into())
+        .await
+        .expect("first login");
+    assert!(
+        account.sync_enabled,
+        "first eligible login must enable cloud sync by default"
+    );
+    assert!(client.sync_enabled().await.unwrap());
+
+    client
+        .set_sync_enabled(false)
+        .await
+        .expect("explicit disable");
+    let account = client
+        .login("e2e@example.com".into(), "password123".into())
+        .await
+        .expect("second login");
+    assert!(
+        !account.sync_enabled,
+        "an explicit sync disable must survive a later login"
+    );
+    assert!(!client.sync_enabled().await.unwrap());
+}
+

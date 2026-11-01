@@ -79,6 +79,8 @@ pub async fn reserve_ai_credits(
     .fetch_one(&mut *tx)
     .await?;
 
+    // Only unexpired reservations count. A crashed request otherwise parks its
+    // reservation forever and silently consumes the user's monthly quota.
     let reserved = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COALESCE(SUM(estimated_units), 0)::bigint

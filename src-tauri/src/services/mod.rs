@@ -8,3 +8,5 @@ pub mod search_service;
 pub mod settings_service;
 pub mod source_service;
 pub mod tutor_service;
+
+pub mod node_agent;

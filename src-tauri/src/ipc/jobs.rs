@@ -1,31 +1,35 @@
 use super::dto::JobDto;
 use crate::error::AppError;
+use crate::ipc::State;
+#[cfg(feature = "desktop")]
 use crate::jobs::event::JobEvent;
 use crate::state::AppState;
+#[cfg(feature = "desktop")]
 use tauri::ipc::Channel;
-use tauri::State;
+#[cfg(feature = "desktop")]
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn job_list(state: State<'_, AppState>) -> Result<Vec<JobDto>, AppError> {
     let jobs = state.jobs.list().await?;
     Ok(jobs.iter().map(JobDto::from).collect())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn job_get(state: State<'_, AppState>, id: Uuid) -> Result<JobDto, AppError> {
     let job = state.jobs.get(id).await?;
     Ok(JobDto::from(&job))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn job_cancel(state: State<'_, AppState>, id: Uuid) -> Result<JobDto, AppError> {
     let job = state.jobs.cancel(id).await?;
     Ok(JobDto::from(&job))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
+#[cfg(feature = "desktop")]
 pub async fn job_subscribe(
     state: State<'_, AppState>,
     id: Uuid,

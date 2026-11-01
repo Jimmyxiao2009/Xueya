@@ -22,6 +22,8 @@ export interface RoadGeometry {
   endnoteTop: number;
   viewBox: string;
   full: string;
+  /** Standalone curves allow each connection to reflect its actual endpoints. */
+  legs: string[];
   /** The travelled part, drawn in the accent colour. */
   completed: string;
   /** `top` for each `.stop`. */
@@ -33,11 +35,13 @@ export function roadGeometry(count: number): RoadGeometry {
   const centers = Array.from({ length: n }, (_, index) => FIRST_CENTER + index * STEP);
   const xAt = (index: number) => (index % 2 === 0 ? LEFT_X : RIGHT_X);
   const segments: string[] = [];
+  const legs: string[] = [];
   for (let index = 0; index < n - 1; index += 1) {
     const y0 = centers[index];
     const y1 = centers[index + 1];
     const x0 = xAt(index);
     const x1 = xAt(index + 1);
+    legs.push(`M${x0} ${y0}C${x0} ${y0 + (index === 0 ? 56 : 76)} ${x1} ${y1 - 76} ${x1} ${y1}`);
     if (index === 0) {
       segments.push(`M${x0} ${y0}C${x0} ${y0 + 56} ${x1} ${y1 - 76} ${x1} ${y1}`);
     } else {
@@ -51,6 +55,7 @@ export function roadGeometry(count: number): RoadGeometry {
     endnoteTop: pathHeight + ENDNOTE_OFFSET,
     viewBox: `0 0 400 ${pathHeight}`,
     full: segments.join(""),
+    legs,
     completed: segments.slice(0, Math.max(0, n - 1)).join(""),
     stopTop: (index) => 14 + index * STEP,
   };

@@ -19,7 +19,7 @@ export function cloudErrorText(error: AppErrorShape): string {
     case "CLOUD_SYNC_CONFLICT":
       return "发现同步冲突，已保留本地副本，不会覆盖你的内容。";
     case "CLOUD_UNAVAILABLE":
-      return "Verruckt Cloud 暂时不可用，本地学习不受影响。";
+      return "学涯云 暂时不可用，本地学习不受影响。";
     case "NETWORK_ERROR":
       return "网络连接失败，稍后会自动重试同步。";
     default:

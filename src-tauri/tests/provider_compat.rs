@@ -18,6 +18,39 @@ use verruckt_lib::ai::openai_compatible::OpenAiCompatibleProvider;
 use verruckt_lib::ai::traits::{ChatMessage, ChatProvider, ChatRequest, EmbeddingProvider};
 use verruckt_lib::domain::ProviderProtocol;
 
+#[tokio::test]
+async fn topic_only_course_uses_real_provider_and_template_lesson_keeps_its_origin() {
+    use verruckt_lib::{ai::registry::ProviderUpsert, secrets::keyring_store::InMemorySecretStore,
+        services::course_service::{CourseService, RouteRequest}, state::{AppState, AppPaths}};
+    let plan = serde_json::json!({"title":"Model-only astronomy", "description":"Generated over HTTP", "learningObjectives":["orbits"], "prerequisites":[],
+        "nodes":[{"id":"orbits","title":"Orbital mechanics","objective":"Explain orbit","description":"Orbit","concepts":["gravity"],"dependencies":[],"evidenceChunkIds":[],"estimatedMinutes":10}]});
+    let response = serde_json::json!({"choices":[{"message":{"content":plan.to_string()}}]});
+    // The outline remains visible when its independent content worker fails.
+    let server = MockServer::start(vec![MockResponse::json(200, response.to_string()), MockResponse::json(401, "{}"), MockResponse::json(401, "{}")]);
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new_with_secrets(AppPaths::new(dir.path()), Arc::new(InMemorySecretStore::new())).await.unwrap();
+    assert!(state.providers.is_mock_active().await.unwrap());
+    state.providers.upsert(ProviderUpsert { id:None, display_name:"Test BYOK".into(), base_url:server.base_url(), chat_model:"test".into(), embedding_model:"test".into(), api_key:Some("test-key".into()), protocol:ProviderProtocol::ChatCompletions, enabled:true }).await.unwrap();
+    sqlx::query("INSERT INTO app_settings (key, value_json, updated_at) VALUES ('ai_provider_mode', ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json")
+        .bind(serde_json::json!("byok").to_string())
+        .bind("2026-01-01T00:00:00Z")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+    assert!(!state.providers.is_mock_active().await.unwrap());
+    let course = CourseService::new(&state).create_course(RouteRequest::new("astronomy"), None).await.unwrap();
+    assert_eq!(course.title, "Model-only astronomy");
+    let metadata: serde_json::Value = serde_json::from_str(&course.metadata_json).unwrap();
+    assert_eq!(metadata["origin"], "byok_general");
+    let nodes = verruckt_lib::db::repo::courses::list_nodes(&state.pool, course.id).await.unwrap();
+    let node_meta: serde_json::Value = serde_json::from_str(&nodes[0].metadata_json).unwrap();
+    assert_eq!(node_meta["quizOrigin"], "pending");
+    assert!(CourseService::new(&state).prepare_node(nodes[0].id, None).await.is_err());
+    assert!(nodes[0].lesson_cache_json.is_none());
+    assert!(server.requests().iter().any(|request| request.contains("chat/completions")));
+}
+
 #[derive(Clone)]
 struct MockResponse {
     status: u16,
@@ -402,4 +435,41 @@ async fn auto_probe_reports_protocol_capabilities_and_dimension() {
     assert_eq!(capabilities.embedding_dimension, Some(3));
     assert_eq!(capabilities.protocol, Some(ProviderProtocol::Responses));
     assert!(capabilities.probe_errors.is_empty(), "{capabilities:?}");
+}
+
+#[tokio::test]
+async fn byok_mode_without_provider_never_falls_back_to_mock() {
+    use verruckt_lib::{secrets::keyring_store::InMemorySecretStore, state::{AppState, AppPaths}};
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new_with_secrets(
+        AppPaths::new(dir.path()),
+        Arc::new(InMemorySecretStore::new()),
+    )
+    .await
+    .unwrap();
+
+    // A fresh install defaults to explicit local-only mode, where deterministic
+    // output is allowed and labelled as mock.
+    assert!(state.providers.is_mock_active().await.unwrap());
+
+    // Selecting BYOK without configuring a provider is a real configuration
+    // error, not a silent switch back to deterministic output.
+    sqlx::query(
+        "INSERT INTO app_settings (key, value_json, updated_at) VALUES ('ai_provider_mode', ?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+    )
+    .bind(serde_json::json!("byok").to_string())
+    .bind("2026-01-01T00:00:00Z")
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    let error = state
+        .providers
+        .default_chat_provider()
+        .await
+        .err()
+        .expect("BYOK without a provider must fail");
+    assert!(matches!(error, verruckt_lib::error::AppError::InvalidInput(_)));
+    assert!(error.to_string().contains("no provider"));
 }

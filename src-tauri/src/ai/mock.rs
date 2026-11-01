@@ -1,17 +1,20 @@
-//! The offline AI provider.
+//! The explicit offline AI provider.
 //!
-//! Verruckt is BYOK: when no provider is configured (or the key is missing) the
-//! registry hands out this provider instead of failing. It never contacts the
-//! network, it never invents facts, and it always answers in the same JSON
-//! schema the real providers are asked for, so the entire product loop —
-//! roadmap, lesson, quiz, diagnosis, adaptation — stays demonstrable offline.
+//! This provider is used only when the learner deliberately selects the
+//! offline/local-only AI mode (or in tests and fixtures). Production BYOK and
+//! Cloud modes must fail loudly instead of silently falling back here, so the
+//! registry never disguises deterministic output as a real model response.
 //!
-//! It is deliberately *not* presented as a real model: every artefact it
-//! produces is tagged `generatedBy = "mock"` and the UI says so.
+//! It never contacts the network, it never invents facts, and it always answers
+//! in the same JSON schema the real providers are asked for, so the entire
+//! product loop — roadmap, lesson, quiz, diagnosis, adaptation — stays
+//! demonstrable offline. Every artefact it produces is tagged
+//! `generatedBy = "mock"` and the UI says so.
 
 use super::prompts::{
     COURSE_PLAN_SYSTEM, EVALUATOR_SYSTEM, FREETEXT_EVALUATION_SYSTEM, LESSON_SYSTEM, QUIZ_SYSTEM,
-    SUMMARY_SYSTEM, TUTOR_STREAM_V1_SYSTEM, TUTOR_SYSTEM, TUTOR_V1_SYSTEM,
+    SUMMARY_SYSTEM, TUTOR_OPENING_V1_SYSTEM, TUTOR_STREAM_V1_SYSTEM, TUTOR_SYSTEM,
+    TUTOR_V1_SYSTEM,
 };
 use super::traits::{ChatProvider, ChatRequest, ChatResponse, EmbeddingProvider};
 use crate::curriculum;
@@ -57,6 +60,8 @@ impl ChatProvider for MockProvider {
             evaluation_json(user)?
         } else if system == FREETEXT_EVALUATION_SYSTEM {
             free_text_evaluation_json(user)?
+        } else if system == TUTOR_OPENING_V1_SYSTEM {
+            tutor_opening_json(user)?
         } else if system == TUTOR_V1_SYSTEM {
             tutor_v1_json(user)?
         } else if system == TUTOR_STREAM_V1_SYSTEM {
@@ -393,26 +398,74 @@ fn free_text_evaluation_json(user: &str) -> Result<String, AppError> {
     .to_string())
 }
 
-fn tutor_v1_json(user: &str) -> Result<String, AppError> {
+fn tutor_opening_json(user: &str) -> Result<String, AppError> {
+    let title = section(user, "Node: ").unwrap_or("这一节");
+    let objective = section(user, "Objective: ").unwrap_or("");
+    let key_points = section(user, "Key points: ").unwrap_or("");
+    let diagnostic = section(user, "Diagnostic question: ").unwrap_or("");
+    let focus = if !diagnostic.is_empty() {
+        diagnostic
+    } else if !key_points.is_empty() {
+        key_points
+    } else if !objective.is_empty() {
+        objective
+    } else {
+        "你会怎样向一个完全没学过的人解释它？"
+    };
+    let message = format!(
+        "先不急着记定义。关于「{title}」，我想先请你判断：{focus}\n\n你会怎么解释？"
+    );
+    Ok(json!({
+        "message": message,
+        "citations": [],
+        "suggestedAction": "ask",
+        "grounding": "model_knowledge",
+        "diagnosis": null,
+    })
+    .to_string())
+}
+
+
+/// Deterministic offline tutor move used only when no real provider is configured.
+///
+/// It keeps the competition demo useful without pretending to be an LLM: the
+/// reply is derived from the current node and the learner's last message, and
+/// the action still changes across explain / example / hint / probe / transition.
+fn tutor_offline_reply(user: &str) -> (String, &'static str, Option<serde_json::Value>) {
     let message = last_learner_message(user);
     let lowered = message.to_lowercase();
-    let citations = citation_labels(user);
-    let (reply, action, diagnosis): (&str, &str, Option<serde_json::Value>) = if message.is_empty()
-    {
-        (
-            "我在。可以先把你的问题拆成一句你能回答的话，我们从那里开始。",
+    let title = section(user, "Node: ").unwrap_or("当前知识点");
+    let objective = section(user, "Objective: ")
+        .unwrap_or("")
+        .trim_end_matches(|c: char| matches!(c, '。' | '.' | '！' | '？'));
+    let diagnostic = section(user, "Diagnostic question: ").unwrap_or("");
+    let focus = if !diagnostic.is_empty() {
+        diagnostic
+    } else if !objective.is_empty() {
+        objective
+    } else {
+        "你会怎样用一个具体例子说明它？"
+    };
+
+    if message.is_empty() {
+        return (
+            format!("我在。关于「{title}」，你可以先用自己的话说说：{focus}"),
             "ask",
             None,
-        )
-    } else if lowered.contains("不懂")
+        );
+    }
+    if lowered.contains("不懂")
         || lowered.contains("不会")
-        || lowered.contains("为什么")
+        || lowered.contains("不知道")
+        || lowered.contains("没学过")
         || lowered.contains("困惑")
         || lowered.contains("confus")
     {
-        (
-            "我们换个角度：先不看定义，试着举一个最小的例子，把它代进去算一遍。\
-             如果你愿意，先告诉我你卡在哪一步——是名词不清楚，还是不知道下一步做什么？",
+        return (
+            format!(
+                "没关系，我们把它拆小一点。先记住「{title}」想解决的是：{objective}。\
+                 现在只做一件事：{focus}\n\n你先试着回答这一小步，不用怕答错。"
+            ),
             "explain",
             Some(json!({
                 "kind": "Misconception",
@@ -421,21 +474,68 @@ fn tutor_v1_json(user: &str) -> Result<String, AppError> {
                 "severity": 0.7,
                 "explanation": "学习者主动表示不理解，可能停留在名词层面。",
             })),
-        )
-    } else if lowered.contains("懂") || lowered.contains("明白") || lowered.contains("continue")
+        );
+    }
+    if lowered.contains("直接讲")
+        || lowered.contains("告诉我答案")
+        || lowered.contains("讲一下")
+        || lowered.contains("解释一下")
     {
-        (
-            "很好。接下来完成这道检查题，然后点击「继续学习」点亮下一个知识点。",
-            "quiz",
+        return (
+            format!(
+                "好，我先给你一个最小解释：{objective}。\
+                 但直接记结论容易忘，你把它代回一个具体例子：{focus}"
+            ),
+            "explain",
             None,
-        )
-    } else {
-        (
-            "收到。我会根据你的回答继续提问；你也可以随时告诉我哪里还不清楚。",
-            "continue",
+        );
+    }
+    if lowered.contains("例子") || lowered.contains("举例") {
+        return (
+            format!(
+                "可以。最小例子：先取一个你熟悉的场景，把「{title}」放进去，只改变一个条件，看结论哪里变了。\
+                 你愿意先说说你想到的例子吗？"
+            ),
+            "example",
             None,
-        )
-    };
+        );
+    }
+    if lowered.contains("为什么") || lowered.contains("原理") || lowered.contains("怎么会") {
+        return (
+            format!(
+                "这个问题问到点上了。先不急着给证明，我们从一个反例开始：如果「{title}」不成立，会发生什么？\
+                 你先猜一个可能崩掉的地方。"
+            ),
+            "hint",
+            None,
+        );
+    }
+    if lowered.contains("懂")
+        || lowered.contains("明白")
+        || lowered.contains("原来")
+        || lowered.contains("continue")
+    {
+        return (
+            format!("很好。那换一个稍微不同的情境，你还能用「{title}」解释吗？{focus}"),
+            "transition",
+            None,
+        );
+    }
+
+    let snippet: String = message.chars().take(24).collect();
+    (
+        format!(
+            "我听到的是「{snippet}…」。我们先确认一下：你说的这个理解，能对应到「{title}」的哪个具体例子？\
+             如果你愿意，也可以直接说哪里不确定。"
+        ),
+        "probe",
+        None,
+    )
+}
+
+fn tutor_v1_json(user: &str) -> Result<String, AppError> {
+    let (reply, action, diagnosis) = tutor_offline_reply(user);
+    let citations = citation_labels(user);
     let grounding = if citations.is_empty() {
         "model_knowledge"
     } else {
@@ -452,8 +552,7 @@ fn tutor_v1_json(user: &str) -> Result<String, AppError> {
 }
 
 fn tutor_stream_text(user: &str) -> String {
-    let message = last_learner_message(user);
-    let lowered = message.to_lowercase();
+    let (body, _action, diagnosis) = tutor_offline_reply(user);
     let citations = citation_labels(user);
     let citation_suffix = if citations.is_empty() {
         String::new()
@@ -465,48 +564,13 @@ fn tutor_stream_text(user: &str) -> String {
             .join(" ");
         format!("（参考本地资料：{labels}）")
     };
-    let (body, diagnosis): (String, Option<serde_json::Value>) = if message.is_empty() {
-        (
-            "我在。可以先把你的问题拆成一句你能回答的话，我们从那里开始。".to_owned(),
-            None,
-        )
-    } else if lowered.contains("不懂")
-        || lowered.contains("不会")
-        || lowered.contains("为什么")
-        || lowered.contains("困惑")
-        || lowered.contains("confus")
-    {
-        (
-            "我们换个角度：先不看定义，试着举一个最小的例子，把它代进去算一遍。\
-             如果你愿意，先告诉我你卡在哪一步——是名词不清楚，还是不知道下一步做什么？"
-                .to_owned(),
-            Some(json!({
-                "kind": "Misconception",
-                "knowledgePointIds": [],
-                "confidence": 0.82,
-                "severity": 0.7,
-                "explanation": "学习者主动表示不理解，可能停留在名词层面。",
-            })),
-        )
-    } else if lowered.contains("懂") || lowered.contains("明白") || lowered.contains("continue")
-    {
-        (
-            "很好。接下来完成这道检查题，然后点击「继续学习」点亮下一个知识点。".to_owned(),
-            None,
-        )
-    } else {
-        (
-            "收到。我会根据你的回答继续提问；你也可以随时告诉我哪里还不清楚。".to_owned(),
-            None,
-        )
-    };
     let mut output = if citation_suffix.is_empty() {
         body
     } else {
         format!("{body} {citation_suffix}")
     };
     if let Some(diagnosis) = diagnosis {
-        output.push_str(&format!("\nDIAGNOSIS: {diagnosis}"));
+        output.push_str(&format!("\\nDIAGNOSIS: {diagnosis}"));
     }
     output
 }

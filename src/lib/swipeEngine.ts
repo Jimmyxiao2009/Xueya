@@ -544,6 +544,9 @@ export async function slideAcross(
     return;
   }
   if (!surface.animate || spec.reducedMotion()) {
+    // React reuses the live pane when committing the next route/tab.
+    // The finger-following offset must not survive an instant transition.
+    surface.style.transform = "";
     if (prepared) prepared.adopt(() => commit(prepared));
     else commit(null);
     return;

@@ -17,6 +17,7 @@ pub fn build_router(state: AppState) -> Router {
 
     let timed_routes = Router::new()
         .merge(routes::auth::router())
+        .merge(routes::admin::router())
         .merge(routes::me::router())
         .merge(routes::entitlements::router())
         .merge(routes::devices::router())

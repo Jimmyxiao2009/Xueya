@@ -9,6 +9,25 @@ import {
   type RouteDetail,
 } from "@/api";
 
+const ACTIVE_ROUTE_KEY = "orbit.activeRouteId";
+
+function savedActiveRoute(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_ROUTE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function rememberActiveRoute(id: string | null) {
+  try {
+    if (id) localStorage.setItem(ACTIVE_ROUTE_KEY, id);
+    else localStorage.removeItem(ACTIVE_ROUTE_KEY);
+  } catch {
+    /* Storage may be disabled; the in-memory selection still works. */
+  }
+}
+
 interface RouteState {
   routes: LearningRoute[];
   activeRouteId: string | null;
@@ -36,7 +55,7 @@ interface RouteState {
 
 export const useRouteStore = create<RouteState>((set, get) => ({
   routes: [],
-  activeRouteId: null,
+  activeRouteId: savedActiveRoute(),
   details: {},
   loading: false,
   error: null,
@@ -53,6 +72,7 @@ export const useRouteStore = create<RouteState>((set, get) => ({
         current && routes.some((route) => route.id === current)
           ? current
           : (routes[0]?.id ?? null);
+      rememberActiveRoute(activeRouteId);
       set({ routes, activeRouteId, loading: false });
       // Every route's roadmap is loaded up front: a swipe preview has to render
       // the neighbouring route synchronously, mid-gesture.
@@ -67,7 +87,10 @@ export const useRouteStore = create<RouteState>((set, get) => ({
     }
   },
 
-  setActive: (id) => set({ activeRouteId: id }),
+  setActive: (id) => {
+    rememberActiveRoute(id);
+    set({ activeRouteId: id });
+  },
 
   detail: (id) => get().details[id],
 
@@ -107,6 +130,7 @@ export const useRouteStore = create<RouteState>((set, get) => ({
         state.activeRouteId === id ? (routes[0]?.id ?? null) : state.activeRouteId;
       return { routes, details, activeRouteId };
     });
+    rememberActiveRoute(get().activeRouteId);
     const active = get().activeRouteId;
     if (active && !get().details[active]) {
       await get().loadDetail(active);

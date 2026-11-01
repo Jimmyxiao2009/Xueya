@@ -65,6 +65,10 @@ impl ChatRequest {
 
     pub fn json(model: impl Into<String>, messages: Vec<ChatMessage>) -> Self {
         Self {
+            // Real reasoning models may spend part of the completion budget on
+            // hidden reasoning before emitting the JSON object. Keep the
+            // structured-output path from ending at an empty/partial response.
+            max_tokens: Some(4096),
             json_mode: true,
             ..Self::new(model, messages)
         }

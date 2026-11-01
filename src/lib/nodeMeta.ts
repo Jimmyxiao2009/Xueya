@@ -7,6 +7,7 @@ export interface NodeMeta {
   origin?: string;
   insertedFor?: string;
   reason?: string;
+  contentStatus?: "pending" | "generating" | "ready" | "failed";
 }
 
 /** Node metadata is written by the planner; the UI reads it defensively. */
@@ -24,9 +25,19 @@ export function nodeMeta(node: RouteNode | undefined): NodeMeta {
       origin: parsed.origin,
       insertedFor: parsed.insertedFor,
       reason: parsed.reason,
+      contentStatus: parsed.contentStatus,
     };
   } catch {
     return fallback;
+  }
+}
+
+export function contentStatusLabel(node: RouteNode): string | null {
+  switch (nodeMeta(node).contentStatus) {
+    case "pending": return "内容排队准备中";
+    case "generating": return "正在准备讲解与练习";
+    case "failed": return "内容生成失败，打开后重试";
+    default: return null;
   }
 }
 
@@ -57,8 +68,10 @@ export function routeMeta(metadataJson: string | undefined): RouteMeta {
 
 /** `origin` tells the learner whether a plan came from a model or a template. */
 export function originLabel(origin?: string | null): string {
+  if (origin === "official_grounded" || origin === "byok_grounded") return "基于你的资料生成";
+  if (origin === "official_general" || origin === "byok_general") return "AI 生成 · 通用知识";
   if (origin === "ai") return "由模型生成";
   if (origin === "adaptation") return "由你的答题结果插入";
-  if (origin === "mock") return "由离线示例模型生成";
-  return "由内置模板生成";
+  if (origin === "mock") return "离线回退 · 非 AI";
+  return "离线回退 · 内置讲解";
 }

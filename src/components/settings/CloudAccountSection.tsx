@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { isManagedBrowser } from "@/lib/runtime";
 import { Icon } from "@/components/ui/Icon";
 import { useCloudStore } from "@/stores/cloudStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -6,8 +7,8 @@ import { useSettingsStore } from "@/stores/settingsStore";
 const AI_SOURCES = [
   {
     value: "cloud",
-    label: "Verruckt Cloud",
-    detail: "官方托管模型，登录并具备 official_ai 能力后可用。",
+    label: "学涯云",
+    detail: "官方模型服务，由账号方案和可用额度决定。",
   },
   {
     value: "byok",
@@ -17,7 +18,7 @@ const AI_SOURCES = [
   {
     value: "offline",
     label: "离线模式",
-    detail: "不调用任何远端模型，比赛现场的最后 fallback。",
+    detail: "学习保存在本机，使用明确标记的离线内容，不调用远端模型。",
   },
 ];
 
@@ -28,6 +29,7 @@ function planLabel(plan?: string | null): string {
 }
 
 export function CloudAccountSection() {
+  const managed = isManagedBrowser();
   const account = useCloudStore((state) => state.account);
   const sessionState = useCloudStore((state) => state.sessionState);
   const devices = useCloudStore((state) => state.devices);
@@ -68,10 +70,11 @@ export function CloudAccountSection() {
   const restoring = accountState === "restoring";
   const signedOut = accountState === "signedOut";
   const officialAi = account?.entitlements?.officialAi ?? false;
-  const cloudSelectable = Boolean(authenticated && officialAi);
   const creditsLimit = account?.entitlements?.monthlyAiCredits ?? 0;
   const creditsUsed =
     usage?.creditsUsed ?? account?.entitlements?.monthlyAiCreditsUsed ?? 0;
+  const exhausted = officialAi && creditsUsed >= creditsLimit;
+  const cloudSelectable = Boolean(authenticated && officialAi && !exhausted);
   const creditPercent =
     creditsLimit > 0 ? Math.min(100, Math.round((creditsUsed / creditsLimit) * 100)) : 0;
 
@@ -82,7 +85,7 @@ export function CloudAccountSection() {
 
   return (
     <>
-      <div className="form-section">
+      {!managed && <div className="form-section">
         <div className="row">
           <h2>AI 来源</h2>
           <span className="small">
@@ -106,11 +109,7 @@ export function CloudAccountSection() {
                 disabled={disabled}
                 aria-pressed={selected}
                 onClick={() => void selectAiMode(source.value)}
-                className={`w-full rounded-lg border px-4 py-3 text-left transition ${
-                  selected
-                    ? "border-accent bg-paper shadow-panel"
-                    : "border-subtle bg-paper/60"
-                } ${disabled ? "opacity-50" : ""}`}
+                className="settings-status"
                 data-motion="menu"
               >
                 <span className="flex items-center justify-between gap-3">
@@ -121,6 +120,8 @@ export function CloudAccountSection() {
                   {source.detail}
                   {source.value === "cloud" && degraded
                     ? " 官方 AI 暂不可用；BYOK 与离线模式仍可用。"
+                    : source.value === "cloud" && exhausted
+                      ? " 本月额度已用完，请切换到自定义 API 或离线模式。"
                     : source.value === "cloud" && !cloudSelectable
                       ? " 需要先登录并确认会员能力。"
                       : ""}
@@ -131,19 +132,19 @@ export function CloudAccountSection() {
         </div>
         {aiMode === "cloud" && !officialAi ? (
           <p className="local-note mt-3">
-            当前账号没有 official_ai 能力，无法选择 Verruckt Cloud；BYOK 与离线模式仍然可用。
+            当前账户未包含 学涯 AI。你仍可使用自定义模型或离线学习。
           </p>
         ) : null}
-      </div>
+      </div>}
 
       <div className="form-section">
         <div className="row">
-          <h2>Verruckt Cloud</h2>
+          <h2>学涯云</h2>
           <span className="small">{planLabel(account?.plan)}</span>
         </div>
 
         {restoring ? (
-          <div className="mt-3 rounded-lg border border-subtle bg-paper px-4 py-3">
+          <div className="mt-3 settings-status">
             <p className="prototype-note">正在恢复 Cloud session…</p>
             <p className="mt-2 text-xs text-muted">本地学习、路线与资料始终可用。</p>
           </div>
@@ -156,7 +157,7 @@ export function CloudAccountSection() {
             }}
           >
             <p className="prototype-note">
-              登录后可使用官方 AI，并按需开启跨设备同步。账号登录不等于强制同步。
+              登录后可使用官方 AI，并默认开启跨设备同步；你可以随时关闭。
             </p>
             <label htmlFor="cloud-email">邮箱</label>
             <input
@@ -195,7 +196,7 @@ export function CloudAccountSection() {
           </form>
         ) : account ? (
           <div className="mt-3 space-y-3">
-            <div className="rounded-lg border border-subtle bg-paper px-4 py-3">
+            <div className="settings-status">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <strong className="block truncate text-sm text-primary">
@@ -207,8 +208,7 @@ export function CloudAccountSection() {
                   </small>
                   {degraded ? (
                     <p className="mt-2 text-xs text-muted">
-                      上次已知 {planLabel(account.plan)} · 官方 AI 暂不可用 ·
-                      本地 BYOK 与离线模式仍可用
+                      {managed ? "服务器连接暂不可用，请稍后重试。" : `上次已知 ${planLabel(account.plan)} · 官方 AI 暂不可用 · 本地 BYOK 与离线模式仍可用`}
                     </p>
                   ) : null}
                 </div>
@@ -223,10 +223,10 @@ export function CloudAccountSection() {
               </div>
             </div>
 
-            <div className="rounded-lg border border-subtle bg-paper px-4 py-3">
+            <div className="settings-status">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <strong className="block text-sm text-primary">Cloud Sync</strong>
+                  <strong className="block text-sm text-primary">云同步</strong>
                   <small className="text-xs text-muted">
                     {degraded
                       ? "等待连接 · 本地学习不受影响"
@@ -295,11 +295,11 @@ export function CloudAccountSection() {
               ) : null}
             </div>
 
-            <div className="rounded-lg border border-subtle bg-paper px-4 py-3">
+            <div className="settings-status">
               <div className="flex items-center justify-between gap-3">
                 <strong className="text-sm text-primary">本月 AI 使用额度</strong>
                 <small className="text-xs text-muted">
-                  {creditsUsed} / {creditsLimit || "不限"}
+                  {!account.entitlements ? "权限信息待确认" : !officialAi ? "未开通官方 AI" : `${creditsUsed} / ${creditsLimit}`}
                 </small>
               </div>
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-subtle">
@@ -308,14 +308,14 @@ export function CloudAccountSection() {
                   style={{ width: `${creditPercent}%` }}
                 />
               </div>
-              {creditsLimit > 0 && creditsUsed >= creditsLimit ? (
+              {exhausted ? (
                 <small className="mt-2 block text-xs text-review">
-                  额度已用完，可在上方切换到自定义 API 或离线模式。
+                  {managed ? "额度已用完，请联系服务器管理员。" : "额度已用完，可在上方切换到自定义 API 或离线模式。"}
                 </small>
               ) : null}
             </div>
 
-            <div className="rounded-lg border border-subtle bg-paper px-4 py-3">
+            <div className="settings-status">
               <div className="row">
                 <strong className="text-sm text-primary">设备</strong>
                 <small className="text-xs text-muted">
@@ -352,7 +352,7 @@ export function CloudAccountSection() {
           </div>
         ) : null}
 
-        <details className="mt-3">
+        {!managed && <details className="mt-3">
           <summary className="cursor-pointer text-xs text-muted">Cloud 服务地址</summary>
           <div className="mt-2 flex gap-2">
             <input
@@ -371,7 +371,7 @@ export function CloudAccountSection() {
               应用
             </button>
           </div>
-        </details>
+        </details>}
 
         {error ? <p className="local-note mt-3">{error}</p> : null}
       </div>

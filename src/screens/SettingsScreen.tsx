@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api } from "@/api";
+import { isManagedBrowser } from "@/lib/runtime";
+import { ThemeChoices } from "@/components/onboarding/OnboardingGate";
 import { CloudAccountSection } from "@/components/settings/CloudAccountSection";
 import { Icon } from "@/components/ui/Icon";
 import { toast } from "@/stores/uiStore";
@@ -36,11 +37,15 @@ interface SettingsScreenProps {
 
 const SEARCH_OPTIONS = [
   { value: "none", label: "不联网" },
+  { value: "auto", label: "自动 · 全部已配置" },
+  { value: "tavily", label: "Tavily" },
+  { value: "serper", label: "Serper · Google" },
+  { value: "searxng", label: "SearXNG" },
   { value: "brave", label: "Brave Search" },
 ];
 
 /**
- * BYOK settings: which model service Orbit talks to, and whether it may search
+ * BYOK settings: which model service 学涯 talks to, and whether it may search
  * the web.
  *
  * The API key field is write-only. It is never prefilled, never echoed back, and
@@ -48,9 +53,13 @@ const SEARCH_OPTIONS = [
  * key exists (`hasApiKey`).
  */
 export function SettingsScreen({ onBack }: SettingsScreenProps) {
+  const managed = isManagedBrowser();
   const providers = useSettingsStore((state) => state.providers);
   const searchProvider = useSettingsStore((state) => state.searchProvider);
   const hasBraveApiKey = useSettingsStore((state) => state.hasBraveApiKey);
+  const hasTavilyApiKey = useSettingsStore((state) => state.hasTavilyApiKey);
+  const hasSerperApiKey = useSettingsStore((state) => state.hasSerperApiKey);
+  const searxngUrl = useSettingsStore((state) => state.searxngUrl);
   const probes = useSettingsStore((state) => state.probes);
   const error = useSettingsStore((state) => state.error);
   const load = useSettingsStore((state) => state.load);
@@ -61,9 +70,12 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
 
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT);
   const [busy, setBusy] = useState(false);
-  const [demoBusy, setDemoBusy] = useState(false);
   const [search, setSearch] = useState(searchProvider);
   const [braveKey, setBraveKey] = useState("");
+  const [tavilyKey, setTavilyKey] = useState("");
+  const [serperKey, setSerperKey] = useState("");
+  const [searxngBase, setSearxngBase] = useState(searxngUrl);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
     void load();
@@ -72,6 +84,10 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
   useEffect(() => {
     setSearch(searchProvider);
   }, [searchProvider]);
+
+  useEffect(() => {
+    setSearxngBase(searxngUrl);
+  }, [searxngUrl]);
 
   const patch = (values: Partial<ProviderDraft>) =>
     setDraft((current) => ({ ...current, ...values }));
@@ -105,58 +121,41 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
         </span>
       </header>
 
-      <main className="create-page scroll-pane">
-        <div className="eyebrow">LOCAL FIRST · CLOUD OPTIONAL</div>
-        <h1 className="page-title">模型与搜索</h1>
+      <main className="create-page scroll-pane settings-surface">
+        <div className="eyebrow">YOUR LEARNING SPACE</div>
+        <h1 className="page-title">账号与学涯云</h1>
         <p className="subtext">
-          不登录、不配置也能完整学习。登录 Verruckt Cloud 可以使用官方 AI
-          与可选的跨设备同步；也可以继续使用自己的 API 或离线模式。
+          管理账号、同步、外观与高级模型设置。普通使用无需配置 Provider。
         </p>
 
         <CloudAccountSection />
 
-        {import.meta.env.DEV ? (
-          <div className="form-section">
-            <div className="row">
-              <h2>竞赛演示</h2>
-              <span className="small">仅开发构建</span>
-            </div>
-            <p className="prototype-note">
-              生成一条使用本地资料的真实「射影几何」演示路线：第一站已完成，第二站为当前站。
-              不会删除普通学习者路线。
-            </p>
-            <button
-              type="button"
-              className="primary mt-4"
-              data-motion="own"
-              disabled={demoBusy}
-              onClick={async () => {
-                if (!window.confirm("重置竞赛演示路线？只删除带演示标记的路线。")) return;
-                if (!window.confirm("再次确认：生成演示资料与路线。")) return;
-                setDemoBusy(true);
-                try {
-                  await api.competitionDemoSeed();
-                  toast("竞赛演示路线已就绪");
-                } catch {
-                  toast("演示重置失败；生产构建可能已禁用该命令");
-                } finally {
-                  setDemoBusy(false);
-                }
-              }}
-            >
-              {demoBusy ? "正在生成…" : "重置竞赛演示"}
-            </button>
-          </div>
-        ) : null}
+        <div className="form-section">
+          <h2>外观</h2>
+          <ThemeChoices />
+        </div>
+        <details
+          className="form-section advanced-settings"
+          open={advancedOpen}
+          onToggle={(event) =>
+            setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)
+          }
+        >
+          <summary>
+            <h2>高级设置</h2>
+            <p className="prototype-note">自定义 AI / BYOK、搜索服务与 Provider 测试仅在这里需要时配置。</p>
+          </summary>
+
 
         <div className="form-section">
           <div className="row">
-            <h2>自定义模型服务</h2>
+            <h2>{managed ? "服务器模型服务" : "自定义模型服务"}</h2>
             <span className="small">
               {providers.length ? `已配置 ${providers.length} 个` : "尚未配置"}
             </span>
           </div>
 
+          {managed && <p className="prototype-note">模型与搜索由管理员配置。密钥在服务器上加密保存，不会发送到浏览器。</p>}
           {providers.map((provider) => {
             const probe = probes[provider.id];
             return (
@@ -174,7 +173,7 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
                       {provider.chatModel} · {provider.baseUrl}
                     </small>
                     <small className="block text-xs text-muted">
-                      {provider.hasApiKey ? "API Key 已存入系统钥匙串" : "未设置 API Key"}
+                      {provider.hasApiKey ? (managed ? "API Key 已在服务器上加密保存" : "API Key 已存入系统钥匙串") : "未设置 API Key"}
                     </small>
                   </div>
                   <button
@@ -188,7 +187,7 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
                   >
                     测试
                   </button>
-                  <button
+                  {!managed && <button
                     type="button"
                     aria-label={`移除${provider.displayName}`}
                     className="px-1 text-muted"
@@ -199,7 +198,7 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
                     data-motion="menu"
                   >
                     <Icon name="trash" />
-                  </button>
+                  </button>}
                 </div>
                 {probe ? (
                   <p
@@ -215,7 +214,7 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
                     ))}
                   </ul>
                 ) : null}
-                <button
+                {!managed && <button
                   type="button"
                   className="mt-2 text-xs text-accent"
                   onClick={() =>
@@ -232,12 +231,12 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
                   data-motion="menu"
                 >
                   编辑这个服务
-                </button>
+                </button>}
               </div>
             );
           })}
 
-          <form
+          {!managed && <form
             id="provider-form"
             onSubmit={(event) => {
               event.preventDefault();
@@ -301,14 +300,16 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
             <p className="prototype-note">
               密钥只写入操作系统的钥匙串，不会回传给界面，也不会出现在任何日志里。
             </p>
-          </form>
+          </form>}
         </div>
 
-        <div className="form-section">
+        {!managed && <div className="form-section">
           <div className="row">
             <h2>联网搜索</h2>
             <span className="small">
-              {hasBraveApiKey ? "已配置" : "未配置"}
+              {hasTavilyApiKey || hasBraveApiKey || hasSerperApiKey || searxngUrl
+                ? "已配置"
+                : "未配置"}
             </span>
           </div>
           <div className="choice-row">
@@ -327,6 +328,59 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
               ))}
             </div>
           </div>
+          {search === "auto" ? (
+            <p className="local-note">
+              自动模式会同时使用已保存的 Tavily、Brave、Serper 与 SearXNG，并把多路结果合并去重；没有配置任何服务时仍可手动导入文件或网页。
+            </p>
+          ) : null}
+          {search === "tavily" ? (
+            <>
+              <label htmlFor="tavily-key">
+                Tavily API Key {hasTavilyApiKey ? <span>留空则不修改</span> : null}
+              </label>
+              <input
+                id="tavily-key"
+                className="text-input"
+                type="password"
+                autoComplete="off"
+                placeholder={hasTavilyApiKey ? "已保存 · 留空保持不变" : "填写 Tavily 密钥（tvly-…）"}
+                value={tavilyKey}
+                onChange={(event) => setTavilyKey(event.target.value)}
+              />
+            </>
+          ) : null}
+          {search === "serper" ? (
+            <>
+              <label htmlFor="serper-key">
+                Serper API Key {hasSerperApiKey ? <span>留空则不修改</span> : null}
+              </label>
+              <input
+                id="serper-key"
+                className="text-input"
+                type="password"
+                autoComplete="off"
+                placeholder={hasSerperApiKey ? "已保存 · 留空保持不变" : "填写 serper.dev 密钥"}
+                value={serperKey}
+                onChange={(event) => setSerperKey(event.target.value)}
+              />
+            </>
+          ) : null}
+          {search === "searxng" ? (
+            <>
+              <label htmlFor="searxng-url">
+                SearXNG 地址 {searxngUrl ? <span>已保存 · 留空则清除</span> : null}
+              </label>
+              <input
+                id="searxng-url"
+                className="text-input"
+                type="url"
+                autoComplete="off"
+                placeholder="https://你的-searxng.example/search"
+                value={searxngBase}
+                onChange={(event) => setSearxngBase(event.target.value)}
+              />
+            </>
+          ) : null}
           {search === "brave" ? (
             <>
               <label htmlFor="brave-key">
@@ -351,8 +405,16 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
               void saveSearch({
                 searchProvider: search,
                 braveApiKey: braveKey.trim() || undefined,
+                tavilyApiKey: tavilyKey.trim() || undefined,
+                serperApiKey: serperKey.trim() || undefined,
+                searxngUrl:
+                  search === "searxng" || search === "auto"
+                    ? searxngBase.trim()
+                    : undefined,
               });
               setBraveKey("");
+              setTavilyKey("");
+              setSerperKey("");
               toast("搜索设置已保存");
             }}
           >
@@ -360,10 +422,12 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
           </button>
         </div>
 
+        }
+        </details>
         {error ? <p className="local-note">{error}</p> : null}
       </main>
 
-      <footer className="create-dock">
+      {!managed && advancedOpen && <footer className="create-dock">
         <button
           className="primary"
           form="provider-form"
@@ -373,7 +437,7 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
         >
           {draft.id ? "更新模型服务" : "保存模型服务"} <Icon name="arrow" />
         </button>
-      </footer>
+      </footer>}
     </>
   );
 }

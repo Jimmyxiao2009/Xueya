@@ -4,14 +4,14 @@ use super::dto::{
 };
 use crate::domain::RelationType;
 use crate::error::AppError;
+use crate::ipc::State;
 use crate::knowledge::hybrid::{HybridRetriever, RetrievalFilter};
 use crate::knowledge_fs::query as knowledge_query;
 use crate::services::knowledge_service::KnowledgeService;
 use crate::state::AppState;
-use tauri::State;
 use uuid::Uuid;
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn knowledge_search(
     state: State<'_, AppState>,
     input: KnowledgeSearchInput,
@@ -39,7 +39,7 @@ pub async fn knowledge_search(
 
 /// Development/debug inspector: returns the exact hybrid hit list, including
 /// the lexical and vector ranks, without pretending it is a production search.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn knowledge_retrieval_debug(
     state: State<'_, AppState>,
     input: RetrievalDebugInput,
@@ -69,7 +69,7 @@ pub async fn knowledge_retrieval_debug(
         .collect())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn knowledge_get_object(
     state: State<'_, AppState>,
     id: Option<Uuid>,
@@ -87,7 +87,7 @@ pub async fn knowledge_get_object(
     Ok(object.into())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn knowledge_get_related(
     state: State<'_, AppState>,
     object_id: Uuid,

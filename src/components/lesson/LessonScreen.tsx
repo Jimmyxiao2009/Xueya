@@ -36,10 +36,13 @@ export function LessonScreen({
 }: LessonScreenProps) {
   const lesson = useLessonStore((state) => (node ? state.byNode[node.id] : undefined));
   const prepare = useLessonStore((state) => state.prepare);
+  const error = useLessonStore((state) => state.error);
+  const loading = useLessonStore((state) => node ? state.loading[node.id] : false);
+  const nodeId = node?.id;
 
   useEffect(() => {
-    if (node) void prepare(node.id);
-  }, [node, prepare]);
+    if (nodeId) void prepare(nodeId);
+  }, [nodeId, prepare]);
 
   const meta = routeMeta(route.metadataJson);
   const minutes = lesson?.estimatedMinutes || node?.estimatedMinutes || 15;
@@ -116,10 +119,12 @@ export function LessonScreen({
         ) : (
           <div className="lesson-content">
             <div className="section-label">
-              <span>正在准备这一课</span>
-              <span className="small">稍等</span>
+              <span>{error && !loading ? "这一课暂时没有准备好" : "正在准备这一课"}</span>
             </div>
-            <div className="empty-note">Orbit 正在整理这一课的提纲与资料…</div>
+            <div className="empty-note" role="status">
+              {error && !loading ? "内容生成暂未成功，已完成的其他课程不受影响。" : "学涯正在准备这一节的讲解与练习。你可以先返回查看路线。"}
+            </div>
+            {error && !loading && node ? <button className="secondary" onClick={() => void prepare(node.id, true)}>重试本节内容</button> : null}
           </div>
         )}
       </main>

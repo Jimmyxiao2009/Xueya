@@ -4,6 +4,14 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 pub async fn insert_source(pool: &SqlitePool, source: &Source) -> Result<(), AppError> {
+    let mut conn = pool.acquire().await?;
+    insert_source_tx(&mut conn, source).await
+}
+
+pub async fn insert_source_tx(
+    conn: &mut sqlx::SqliteConnection,
+    source: &Source,
+) -> Result<(), AppError> {
     sqlx::query(
         r#"
         INSERT INTO sources
@@ -20,7 +28,7 @@ pub async fn insert_source(pool: &SqlitePool, source: &Source) -> Result<(), App
     .bind(source.status)
     .bind(source.created_at.to_rfc3339())
     .bind(source.updated_at.to_rfc3339())
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
@@ -118,6 +126,14 @@ pub async fn find_source_by_hash(
 }
 
 pub async fn insert_revision(pool: &SqlitePool, revision: &SourceRevision) -> Result<(), AppError> {
+    let mut conn = pool.acquire().await?;
+    insert_revision_tx(&mut conn, revision).await
+}
+
+pub async fn insert_revision_tx(
+    conn: &mut sqlx::SqliteConnection,
+    revision: &SourceRevision,
+) -> Result<(), AppError> {
     sqlx::query(
         r#"
         INSERT INTO source_revisions
@@ -133,7 +149,7 @@ pub async fn insert_revision(pool: &SqlitePool, revision: &SourceRevision) -> Re
     .bind(&revision.mime_type)
     .bind(revision.size_bytes)
     .bind(revision.created_at.to_rfc3339())
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
@@ -149,6 +165,14 @@ pub async fn next_revision_number(pool: &SqlitePool, source_id: Uuid) -> Result<
 }
 
 pub async fn insert_document(pool: &SqlitePool, document: &Document) -> Result<(), AppError> {
+    let mut conn = pool.acquire().await?;
+    insert_document_tx(&mut conn, document).await
+}
+
+pub async fn insert_document_tx(
+    conn: &mut sqlx::SqliteConnection,
+    document: &Document,
+) -> Result<(), AppError> {
     sqlx::query(
         r#"
         INSERT INTO documents
@@ -164,7 +188,7 @@ pub async fn insert_document(pool: &SqlitePool, document: &Document) -> Result<(
     .bind(document.page_count)
     .bind(&document.metadata_json)
     .bind(document.created_at.to_rfc3339())
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }

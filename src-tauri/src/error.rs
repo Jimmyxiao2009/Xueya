@@ -128,13 +128,13 @@ impl AppError {
             Self::JobCancelled => "The job was cancelled.",
             Self::UnsupportedFormat(_) => "The document format is not supported.",
             Self::Internal(_) => "An internal error occurred.",
-            Self::CloudAuth(_) => "Verruckt Cloud sign-in is required.",
+            Self::CloudAuth(_) => "学涯云 sign-in is required.",
             Self::CloudEntitlementRequired => "This account does not include that capability.",
-            Self::CloudQuotaExceeded => "The monthly Verruckt Cloud AI quota is exhausted.",
-            Self::CloudStorageQuotaExceeded => "The Verruckt Cloud storage quota is exhausted.",
+            Self::CloudQuotaExceeded => "The monthly 学涯云 AI quota is exhausted.",
+            Self::CloudStorageQuotaExceeded => "The 学涯云 storage quota is exhausted.",
             Self::CloudSyncConflict(_) => "A sync conflict needs attention.",
-            Self::CloudUnavailable(_) => "Verruckt Cloud is temporarily unavailable.",
-            Self::CloudSessionExpired => "The Verruckt Cloud session has expired; sign in again.",
+            Self::CloudUnavailable(_) => "学涯云 is temporarily unavailable.",
+            Self::CloudSessionExpired => "The 学涯云 session has expired; sign in again.",
         }
     }
 
@@ -214,7 +214,10 @@ pub fn redact(value: &str) -> String {
             .to_ascii_lowercase()
             .find(&marker.to_ascii_lowercase())
         {
-            let end = (index + 512).min(redacted.len());
+            let mut end = (index + 512).min(redacted.len());
+            while !redacted.is_char_boundary(end) {
+                end += 1;
+            }
             let replacement = format!("{}[REDACTED]", &redacted[..index]);
             redacted = format!("{replacement}{}", &redacted[end..]);
         }

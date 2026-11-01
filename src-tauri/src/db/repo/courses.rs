@@ -1,5 +1,6 @@
 use crate::domain::{Course, CourseNode, CourseNodeDependency, CourseNodeStatus, RouteProgress};
 use crate::error::AppError;
+use sqlx::Connection;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -16,7 +17,17 @@ pub async fn insert_course_graph(
     nodes: &[CourseNode],
     dependencies: &[CourseNodeDependency],
 ) -> Result<(), AppError> {
-    let mut transaction = pool.begin().await?;
+    let mut conn = pool.acquire().await?;
+    insert_course_graph_tx(&mut conn, course, nodes, dependencies).await
+}
+
+pub async fn insert_course_graph_tx(
+    conn: &mut sqlx::SqliteConnection,
+    course: &Course,
+    nodes: &[CourseNode],
+    dependencies: &[CourseNodeDependency],
+) -> Result<(), AppError> {
+    let mut transaction = conn.begin().await?;
 
     sqlx::query(
         r#"
@@ -103,10 +114,18 @@ pub async fn list_courses(pool: &SqlitePool) -> Result<Vec<Course>, AppError> {
 }
 
 pub async fn get_course(pool: &SqlitePool, id: Uuid) -> Result<Course, AppError> {
+    let mut conn = pool.acquire().await?;
+    get_course_tx(&mut conn, id).await
+}
+
+pub async fn get_course_tx(
+    conn: &mut sqlx::SqliteConnection,
+    id: Uuid,
+) -> Result<Course, AppError> {
     let query = format!("SELECT {COURSE_COLUMNS} FROM courses WHERE id = ?");
     sqlx::query_as::<_, Course>(&query)
         .bind(id)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("course {id}")))
 }
@@ -126,20 +145,36 @@ pub async fn delete_course(pool: &SqlitePool, id: Uuid) -> Result<(), AppError> 
 }
 
 pub async fn list_nodes(pool: &SqlitePool, course_id: Uuid) -> Result<Vec<CourseNode>, AppError> {
+    let mut conn = pool.acquire().await?;
+    list_nodes_tx(&mut conn, course_id).await
+}
+
+pub async fn list_nodes_tx(
+    conn: &mut sqlx::SqliteConnection,
+    course_id: Uuid,
+) -> Result<Vec<CourseNode>, AppError> {
     let query = format!(
         "SELECT {NODE_COLUMNS} FROM course_nodes WHERE course_id = ? ORDER BY order_hint, created_at"
     );
     Ok(sqlx::query_as::<_, CourseNode>(&query)
         .bind(course_id)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await?)
 }
 
 pub async fn get_node(pool: &SqlitePool, id: Uuid) -> Result<CourseNode, AppError> {
+    let mut conn = pool.acquire().await?;
+    get_node_tx(&mut conn, id).await
+}
+
+pub async fn get_node_tx(
+    conn: &mut sqlx::SqliteConnection,
+    id: Uuid,
+) -> Result<CourseNode, AppError> {
     let query = format!("SELECT {NODE_COLUMNS} FROM course_nodes WHERE id = ?");
     sqlx::query_as::<_, CourseNode>(&query)
         .bind(id)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("course node {id}")))
 }
@@ -148,11 +183,19 @@ pub async fn list_dependencies(
     pool: &SqlitePool,
     course_id: Uuid,
 ) -> Result<Vec<CourseNodeDependency>, AppError> {
+    let mut conn = pool.acquire().await?;
+    list_dependencies_tx(&mut conn, course_id).await
+}
+
+pub async fn list_dependencies_tx(
+    conn: &mut sqlx::SqliteConnection,
+    course_id: Uuid,
+) -> Result<Vec<CourseNodeDependency>, AppError> {
     Ok(sqlx::query_as::<_, CourseNodeDependency>(
         "SELECT course_id, node_id, depends_on_node_id FROM course_node_dependencies WHERE course_id = ? ORDER BY node_id",
     )
     .bind(course_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?)
 }
 
@@ -173,12 +216,21 @@ pub async fn update_node_status(
     node_id: Uuid,
     status: CourseNodeStatus,
 ) -> Result<(), AppError> {
+    let mut conn = pool.acquire().await?;
+    update_node_status_tx(&mut conn, node_id, status).await
+}
+
+pub async fn update_node_status_tx(
+    conn: &mut sqlx::SqliteConnection,
+    node_id: Uuid,
+    status: CourseNodeStatus,
+) -> Result<(), AppError> {
     let now = crate::util::time::utc_now().to_rfc3339();
     sqlx::query("UPDATE course_nodes SET status = ?, updated_at = ? WHERE id = ?")
         .bind(status)
         .bind(now)
         .bind(node_id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     Ok(())
 }
@@ -188,12 +240,21 @@ pub async fn update_node_confidence(
     node_id: Uuid,
     confidence: f64,
 ) -> Result<(), AppError> {
+    let mut conn = pool.acquire().await?;
+    update_node_confidence_tx(&mut conn, node_id, confidence).await
+}
+
+pub async fn update_node_confidence_tx(
+    conn: &mut sqlx::SqliteConnection,
+    node_id: Uuid,
+    confidence: f64,
+) -> Result<(), AppError> {
     let now = crate::util::time::utc_now().to_rfc3339();
     sqlx::query("UPDATE course_nodes SET confidence = ?, updated_at = ? WHERE id = ?")
         .bind(confidence.clamp(0.0, 1.0))
         .bind(now)
         .bind(node_id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     Ok(())
 }
@@ -222,12 +283,21 @@ pub async fn set_current_node(
     course_id: Uuid,
     node_id: Option<Uuid>,
 ) -> Result<(), AppError> {
+    let mut conn = pool.acquire().await?;
+    set_current_node_tx(&mut conn, course_id, node_id).await
+}
+
+pub async fn set_current_node_tx(
+    conn: &mut sqlx::SqliteConnection,
+    course_id: Uuid,
+    node_id: Option<Uuid>,
+) -> Result<(), AppError> {
     let now = crate::util::time::utc_now().to_rfc3339();
     sqlx::query("UPDATE courses SET current_node_id = ?, updated_at = ? WHERE id = ?")
         .bind(node_id)
         .bind(now)
         .bind(course_id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     Ok(())
 }
@@ -294,10 +364,19 @@ pub async fn shift_order_hints(
     course_id: Uuid,
     from: i64,
 ) -> Result<(), AppError> {
+    let mut conn = pool.acquire().await?;
+    shift_order_hints_tx(&mut conn, course_id, from).await
+}
+
+pub async fn shift_order_hints_tx(
+    conn: &mut sqlx::SqliteConnection,
+    course_id: Uuid,
+    from: i64,
+) -> Result<(), AppError> {
     sqlx::query("UPDATE course_nodes SET order_hint = order_hint + 1 WHERE course_id = ? AND order_hint >= ?")
         .bind(course_id)
         .bind(from)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     Ok(())
 }
@@ -340,6 +419,16 @@ pub async fn review_node_exists_for_point(
     point_id: Uuid,
     after_node_id: Uuid,
 ) -> Result<bool, AppError> {
+    let mut conn = pool.acquire().await?;
+    review_node_exists_for_point_tx(&mut conn, course_id, point_id, after_node_id).await
+}
+
+pub async fn review_node_exists_for_point_tx(
+    conn: &mut sqlx::SqliteConnection,
+    course_id: Uuid,
+    point_id: Uuid,
+    after_node_id: Uuid,
+) -> Result<bool, AppError> {
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM course_nodes \
          WHERE course_id = ? AND kind = 'review' \
@@ -349,7 +438,7 @@ pub async fn review_node_exists_for_point(
     .bind(course_id)
     .bind(point_id.to_string())
     .bind(after_node_id.to_string())
-    .fetch_one(pool)
+    .fetch_one(&mut *conn)
     .await?;
     Ok(count > 0)
 }

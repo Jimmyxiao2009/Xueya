@@ -3,6 +3,7 @@ import type { Lesson, RouteNode } from "@/api";
 import { Icon } from "@/components/ui/Icon";
 import { hostnameOf } from "@/lib/format";
 
+
 /** The decorative geometry plate in the lesson header. */
 export function GeoPlate() {
   return (
@@ -78,28 +79,9 @@ function TodoPane({ lesson }: { lesson: Lesson }) {
           </div>
         ))}
       </div>
-      {lesson.explanation ? (
-        <div className="lesson-brief">
-          <div className="section-label">
-            <span>Orbit 的讲解</span>
-            <span className="small">
-              {lesson.generatedBy === "mock"
-                ? "离线示例"
-                : lesson.generatedBy === "ai"
-                  ? "模型生成"
-                  : "内置讲解"}
-            </span>
-          </div>
-          <p>{lesson.explanation}</p>
-          {lesson.keyPoints.length ? (
-            <ul className="key-points">
-              {lesson.keyPoints.map((point) => (
-                <li key={point}>{point}</li>
-              ))}
-            </ul>
-          ) : null}
-        </div>
-      ) : null}
+      <p className="prototype-note">
+        讲解会在对话中逐步展开；开始学习后，你可以随时请学涯直接讲解。
+      </p>
       <p className="swipe-tip">
         向左滑动，翻开本课资料 <Icon name="arrow" />
       </p>

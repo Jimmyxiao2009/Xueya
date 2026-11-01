@@ -33,6 +33,21 @@ impl<'a> AdaptationService<'a> {
         after_node_id: Uuid,
         diagnosis: &Diagnosis,
     ) -> Result<AdaptationOutcome, AppError> {
+        let mut tx = self.state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let outcome = self
+            .apply_tx(&mut tx, course_id, after_node_id, diagnosis)
+            .await?;
+        tx.commit().await?;
+        Ok(outcome)
+    }
+
+    pub async fn apply_tx(
+        &self,
+        tx: &mut sqlx::SqliteConnection,
+        course_id: Uuid,
+        after_node_id: Uuid,
+        diagnosis: &Diagnosis,
+    ) -> Result<AdaptationOutcome, AppError> {
         let decision = AdaptationPolicy.decide(diagnosis);
         match decision {
             AdaptationDecision::None => Ok(AdaptationOutcome {
@@ -41,17 +56,20 @@ impl<'a> AdaptationService<'a> {
                 inserted_node_id: None,
             }),
             AdaptationDecision::InsertReview => {
-                self.insert_review(course_id, after_node_id, diagnosis)
+                self.insert_review_tx(&mut *tx, course_id, after_node_id, diagnosis)
                     .await
             }
             AdaptationDecision::IncreasePractice => {
                 // IncreasePractice is deliberately handled by the same
                 // idempotent insertion path today: the learner sees a targeted
                 // practice node, and the policy decision is still recorded.
-                self.insert_review(course_id, after_node_id, diagnosis)
+                self.insert_review_tx(&mut *tx, course_id, after_node_id, diagnosis)
                     .await
             }
-            AdaptationDecision::ScheduleReview => self.schedule_review(course_id, diagnosis).await,
+            AdaptationDecision::ScheduleReview => {
+                self.schedule_review_tx(&mut *tx, course_id, diagnosis)
+                    .await
+            }
             AdaptationDecision::AdjustMastery => Ok(AdaptationOutcome {
                 decision,
                 event: None,
@@ -60,19 +78,22 @@ impl<'a> AdaptationService<'a> {
         }
     }
 
-    async fn insert_review(
+    async fn insert_review_tx(
         &self,
+        tx: &mut sqlx::SqliteConnection,
         course_id: Uuid,
         after_node_id: Uuid,
         diagnosis: &Diagnosis,
     ) -> Result<AdaptationOutcome, AppError> {
-        let after = course_repo::get_node(&self.state.pool, after_node_id).await?;
-        let point_id = self.point_for_diagnosis(after_node_id, diagnosis).await?;
+        let after = course_repo::get_node_tx(&mut *tx, after_node_id).await?;
+        let point_id = self
+            .point_for_diagnosis_tx(&mut *tx, after_node_id, diagnosis)
+            .await?;
         let title = crate::domain::adaptation::review_node_title(&after.title);
 
         if let Some(point_id) = point_id {
-            if course_repo::review_node_exists_for_point(
-                &self.state.pool,
+            if course_repo::review_node_exists_for_point_tx(
+                &mut *tx,
                 course_id,
                 point_id,
                 after_node_id,
@@ -95,7 +116,8 @@ impl<'a> AdaptationService<'a> {
         let objective =
             crate::domain::adaptation::review_node_objective(std::slice::from_ref(&reason));
         let review = CourseService::new(self.state)
-            .insert_review_node(
+            .insert_review_node_tx(
+                &mut *tx,
                 course_id,
                 after_node_id,
                 &title,
@@ -105,7 +127,7 @@ impl<'a> AdaptationService<'a> {
             )
             .await?;
 
-        let event = loop_repo::list_adaptations(&self.state.pool, course_id, 1)
+        let event = loop_repo::list_adaptations_tx(&mut *tx, course_id, 1)
             .await?
             .into_iter()
             .next();
@@ -116,15 +138,16 @@ impl<'a> AdaptationService<'a> {
         })
     }
 
-    async fn schedule_review(
+    async fn schedule_review_tx(
         &self,
+        tx: &mut sqlx::SqliteConnection,
         course_id: Uuid,
         diagnosis: &Diagnosis,
     ) -> Result<AdaptationOutcome, AppError> {
         // Low-confidence observations schedule a review instead of changing the
         // roadmap. Persisting the learner state is the real side effect.
         for point_id in &diagnosis.knowledge_point_ids {
-            let mut state = loop_repo::get_learner_state(&self.state.pool, course_id, *point_id)
+            let mut state = loop_repo::get_learner_state_tx(&mut *tx, course_id, *point_id)
                 .await?
                 .unwrap_or_else(|| crate::domain::LearnerState::fresh(course_id, *point_id));
             state.next_review = Some(crate::domain::schedule_next_review(
@@ -133,7 +156,7 @@ impl<'a> AdaptationService<'a> {
                 state.mistakes.max(1),
             ));
             state.updated_at = utc_now();
-            loop_repo::upsert_learner_state(&self.state.pool, &state).await?;
+            loop_repo::upsert_learner_state_tx(&mut *tx, &state).await?;
         }
         Ok(AdaptationOutcome {
             decision: AdaptationDecision::ScheduleReview,
@@ -142,15 +165,16 @@ impl<'a> AdaptationService<'a> {
         })
     }
 
-    async fn point_for_diagnosis(
+    async fn point_for_diagnosis_tx(
         &self,
+        tx: &mut sqlx::SqliteConnection,
         after_node_id: Uuid,
         diagnosis: &Diagnosis,
     ) -> Result<Option<Uuid>, AppError> {
         if let Some(point_id) = diagnosis.knowledge_point_ids.first().copied() {
             return Ok(Some(point_id));
         }
-        Ok(loop_repo::points_for_node(&self.state.pool, after_node_id)
+        Ok(loop_repo::points_for_node_tx(&mut *tx, after_node_id)
             .await?
             .first()
             .map(|point| point.id))

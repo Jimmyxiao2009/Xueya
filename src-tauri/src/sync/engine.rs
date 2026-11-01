@@ -147,7 +147,8 @@ impl CloudSyncService {
     /// Push local changes, then pull remote changes. Never blocks learning:
     /// callers may ignore the error and the outbox remains durable.
     pub async fn sync_now(&self) -> Result<SyncSummary, AppError> {
-        let account = self.cloud.account_state().await?;
+        let _transition = self.cloud.transition.read().await;
+        let account = self.cloud.account_state_unlocked().await?;
         if !account.logged_in {
             return Ok(SyncSummary::skipped("not_signed_in"));
         }
@@ -163,6 +164,9 @@ impl CloudSyncService {
             return Ok(SyncSummary::skipped("entitlement_required"));
         }
 
+        self.cloud
+            .check_profile_owner(account.user_id.ok_or(AppError::CloudSessionExpired)?, true)
+            .await?;
         let _guard = self.lock.lock().await;
         let result = self.run_once(&account).await;
         if let Err(error) = &result {
@@ -219,7 +223,8 @@ impl CloudSyncService {
             return Ok(false);
         }
 
-        let mut cursor = self.cursor().await?;
+        let mut cursor = String::new();
+        let mut snapshot = Vec::new();
         for _ in 0..MAX_PAGES {
             let path = format!(
                 "/api/v1/sync/bootstrap?limit={PULL_LIMIT}&cursor={}",
@@ -235,7 +240,7 @@ impl CloudSyncService {
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default();
-            let applied = self.apply_remote_entities(&entities).await?;
+            snapshot.extend(entities);
             let next_cursor = body
                 .get("next_cursor")
                 .and_then(Value::as_str)
@@ -247,6 +252,7 @@ impl CloudSyncService {
                 .unwrap_or(false);
             cursor = next_cursor;
             if !has_more {
+                let applied = self.apply_remote_entities(&snapshot).await?;
                 let sync_cursor = body
                     .get("sync_cursor")
                     .and_then(Value::as_str)
@@ -309,7 +315,17 @@ impl CloudSyncService {
                 continue;
             }
             let local_revision = local_revision(&mut tx, entity_type, &local_id).await?;
-            if local_revision > 0 && local_revision != revision {
+            let pending_base: Option<i64> = sqlx::query_scalar(
+                "SELECT MIN(base_revision) FROM sync_outbox WHERE entity_type = ? AND entity_id = ?",
+            )
+            .bind(entity_type)
+            .bind(&local_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if revision <= pending_base.unwrap_or(local_revision) {
+                continue;
+            }
+            if pending_base.is_some() {
                 record_conflict_in_tx(
                     &mut tx,
                     entity_type,
@@ -605,6 +621,30 @@ impl CloudSyncService {
             if has_open_conflict(&mut tx, entity_type, &local_id).await? {
                 continue;
             }
+            let pending_base: Option<i64> = sqlx::query_scalar(
+                "SELECT MIN(base_revision) FROM sync_outbox WHERE entity_type = ? AND entity_id = ?",
+            )
+            .bind(entity_type)
+            .bind(&local_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            let current_revision = local_revision(&mut tx, entity_type, &local_id).await?;
+            if revision <= pending_base.unwrap_or(current_revision) {
+                continue;
+            }
+            if pending_base.is_some() {
+                record_conflict_in_tx(
+                    &mut tx,
+                    entity_type,
+                    &local_id,
+                    revision,
+                    current_revision,
+                    &payload,
+                    operation == "delete",
+                )
+                .await?;
+                continue;
+            }
             if operation == "delete" {
                 adapter.delete(&mut tx, &local_id).await?;
             } else {
@@ -755,7 +795,11 @@ fn entity_priority(entity_type: &str) -> u8 {
         "course_node_dependency" => 3,
         "node_knowledge_point" => 4,
         "lesson_step" => 5,
+        "learning_session" => 6,
         "learner_state" => 6,
+        "mastery_state" => 7,
+        "learning_message" => 8,
+        "learning_attempt" => 9,
         "quiz_question" => 7,
         "quiz_attempt" => 8,
         "adaptation_event" => 9,
@@ -794,6 +838,7 @@ fn resolve_local_id(entity_type: &str, sync_id: Uuid, payload: Option<&Value>) -
             string("course_id")?,
             string("knowledge_point_id")?,
         )),
+        "mastery_state" => string("node_id").map(str::to_owned),
         _ => Some(hex::encode(sync_id.as_bytes())),
     }
 }
@@ -929,10 +974,14 @@ async fn record_conflict_in_tx(
     server_payload: &Value,
     deleted: bool,
 ) -> Result<(), AppError> {
+    let local_payload = match adapter_for(entity_type) {
+        Some(adapter) => adapter.load_tx(&mut **tx, entity_id).await?,
+        None => None,
+    };
     let id = Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO sync_conflicts (id, entity_type, entity_id, server_revision, client_revision, \
-         server_payload_json, deleted, resolved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+         server_payload_json, deleted, resolved, created_at, local_payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
     )
     .bind(id)
     .bind(entity_type)
@@ -942,6 +991,7 @@ async fn record_conflict_in_tx(
     .bind(server_payload.to_string())
     .bind(if deleted { 1_i64 } else { 0_i64 })
     .bind(utc_now().to_rfc3339())
+    .bind(local_payload.map(|value| value.to_string()))
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -958,4 +1008,179 @@ fn encode_query(value: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod audit_regressions {
+    use super::*;
+    use crate::db::repo::courses;
+    use crate::services::course_service::{CourseService, RouteRequest};
+    use crate::state::{AppPaths, AppState};
+
+    async fn state() -> (AppState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new_with_secrets(
+            AppPaths::new(dir.path()),
+            Arc::new(crate::secrets::keyring_store::InMemorySecretStore::new()),
+        )
+        .await
+        .unwrap();
+        (state, dir)
+    }
+
+    #[tokio::test]
+    async fn pull_preserves_unsent_edit_and_copies_local_conflict_payload() {
+        let (s, _dir) = state().await;
+        let course = CourseService::new(&s)
+            .create_course(RouteRequest::new("Local title"), None)
+            .await
+            .unwrap();
+        let id = hex::encode(course.id.as_bytes());
+        let mut payload = adapter_for("course")
+            .unwrap()
+            .load(&s.pool, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        payload["title"] = json!("Remote title");
+        let change = json!({"entity_type":"course", "entity_id":course.id, "revision":2, "operation":"upsert", "payload":payload});
+        assert_eq!(
+            s.sync.apply_pull_changes(&[change.clone()]).await.unwrap(),
+            0
+        );
+        assert_eq!(
+            courses::get_course(&s.pool, course.id).await.unwrap().title,
+            course.title
+        );
+        let saved: String = sqlx::query_scalar(
+            "SELECT local_payload_json FROM sync_conflicts WHERE entity_type='course'",
+        )
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&saved).unwrap()["title"],
+            course.title
+        );
+        s.sync.apply_pull_changes(&[change]).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_conflicts")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn pull_ignores_older_and_repeated_revisions() {
+        let (s, _dir) = state().await;
+        let course = CourseService::new(&s)
+            .create_course(RouteRequest::new("Local title"), None)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM sync_outbox")
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        let id = hex::encode(course.id.as_bytes());
+        let mut payload = adapter_for("course")
+            .unwrap()
+            .load(&s.pool, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        payload["title"] = json!("New remote title");
+        let mut change = json!({"entity_type":"course", "entity_id":course.id, "revision":3, "operation":"upsert", "payload":payload});
+        assert_eq!(
+            s.sync.apply_pull_changes(&[change.clone()]).await.unwrap(),
+            1
+        );
+        change["payload"]["title"] = json!("Stale remote title");
+        assert_eq!(
+            s.sync.apply_pull_changes(&[change.clone()]).await.unwrap(),
+            0
+        );
+        change["revision"] = json!(2);
+        assert_eq!(s.sync.apply_pull_changes(&[change]).await.unwrap(), 0);
+        assert_eq!(
+            courses::get_course(&s.pool, course.id).await.unwrap().title,
+            "New remote title"
+        );
+        sqlx::query("UPDATE courses SET title = 'Unsent edit' WHERE id = ?")
+            .bind(course.id)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        let replay = json!({"entity_type":"course", "entity_id":course.id, "revision":3, "operation":"upsert", "payload":payload});
+        assert_eq!(s.sync.apply_pull_changes(&[replay]).await.unwrap(), 0);
+        let conflicts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_conflicts")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            conflicts, 0,
+            "replaying the already synchronized base is not a conflict"
+        );
+        assert_eq!(
+            courses::get_course(&s.pool, course.id).await.unwrap().title,
+            "Unsent edit"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_orders_parents_and_drops_foreign_device_session_links() {
+        let (s, _dir) = state().await;
+        let course = CourseService::new(&s)
+            .create_course(RouteRequest::new("Geometry"), None)
+            .await
+            .unwrap();
+        let node = courses::list_nodes(&s.pool, course.id).await.unwrap()[0].clone();
+        let started = crate::services::learning_service::LearningService::new(&s)
+            .start(node.id, None)
+            .await
+            .unwrap();
+        let quiz = crate::services::quiz_service::QuizService::new(&s);
+        let question = quiz.questions_for_node(node.id).await.unwrap()[0].clone();
+        quiz.submit(question.id, question.expected(), Some(started.session.id))
+            .await
+            .unwrap();
+        let mut snapshot = Vec::new();
+        for (kind, table) in [
+            ("course", "courses"),
+            ("course_node", "course_nodes"),
+            ("knowledge_point", "knowledge_points"),
+            ("quiz_question", "quiz_questions"),
+            ("quiz_attempt", "quiz_attempts"),
+        ] {
+            let ids: Vec<Uuid> = sqlx::query_scalar(&format!("SELECT id FROM {table}"))
+                .fetch_all(&s.pool)
+                .await
+                .unwrap();
+            for id in ids {
+                let payload = adapter_for(kind)
+                    .unwrap()
+                    .load(&s.pool, &hex::encode(id.as_bytes()))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                snapshot.push(json!({"entity_type":kind,"entity_id":id,"revision":1,"deleted":false,"payload":payload}));
+            }
+        }
+        snapshot.reverse();
+        let (other, _other_dir) = state().await;
+        assert_eq!(
+            other.sync.apply_remote_entities(&snapshot).await.unwrap(),
+            snapshot.len()
+        );
+        let linked: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM quiz_attempts WHERE session_id IS NOT NULL")
+                .fetch_one(&other.pool)
+                .await
+                .unwrap();
+        assert_eq!(linked, 0);
+        let attempts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM quiz_attempts")
+            .fetch_one(&other.pool)
+            .await
+            .unwrap();
+        assert_eq!(attempts, 1);
+    }
 }

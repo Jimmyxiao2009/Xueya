@@ -6,12 +6,14 @@ use crate::ai::registry::{ProviderUpsert, MOCK_PROVIDER_ID};
 use crate::ai::traits::{ChatMessage, ChatRequest};
 use crate::domain::ProviderProtocol;
 use crate::error::AppError;
+use crate::ipc::{AppHandle, State};
 use crate::state::AppState;
 use futures_util::StreamExt;
-use tauri::{AppHandle, Emitter, State};
+#[cfg(feature = "desktop")]
+use tauri::Emitter;
 use uuid::Uuid;
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn provider_list(state: State<'_, AppState>) -> Result<Vec<ProviderDto>, AppError> {
     let providers = state.providers.list().await?;
     let mut output = Vec::with_capacity(providers.len());
@@ -28,7 +30,7 @@ pub async fn provider_list(state: State<'_, AppState>) -> Result<Vec<ProviderDto
     Ok(output)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn provider_upsert(
     state: State<'_, AppState>,
     input: ProviderUpsertInput,
@@ -51,12 +53,12 @@ pub async fn provider_upsert(
     Ok(ProviderDto::from_config(provider, has_api_key, masked_hint).await)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn provider_delete(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
     state.providers.delete(id).await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn provider_test(
     state: State<'_, AppState>,
     id: Uuid,
@@ -87,7 +89,7 @@ pub async fn provider_test(
 /// Deltas are emitted on the `provider_stream` event as `{ requestId, event }`
 /// while the command returns the concatenated final text. The frontend can
 /// render incrementally and still receive one authoritative final value.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn provider_stream_chat(
     app: AppHandle,
     state: State<'_, AppState>,

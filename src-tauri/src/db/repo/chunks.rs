@@ -1,10 +1,19 @@
 use crate::domain::Chunk;
 use crate::error::AppError;
+use sqlx::Connection;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
 pub async fn insert_chunks(pool: &SqlitePool, chunks: &[Chunk]) -> Result<(), AppError> {
-    let mut transaction = pool.begin().await?;
+    let mut conn = pool.acquire().await?;
+    insert_chunks_tx(&mut conn, chunks).await
+}
+
+pub async fn insert_chunks_tx(
+    conn: &mut sqlx::SqliteConnection,
+    chunks: &[Chunk],
+) -> Result<(), AppError> {
+    let mut transaction = conn.begin().await?;
     for chunk in chunks {
         sqlx::query(
             r#"

@@ -32,8 +32,8 @@ const PHASE_COPY: Record<JobPhase, string> = {
 export function phaseOf(job: Job): JobPhase {
   if (job.status === "completed") return "ready";
   const text = `${job.kind} ${job.message}`.toLowerCase();
-  if (text.includes("evidence") || text.includes("collecting")) return "collecting_sources";
-  if (text.includes("plan") || text.includes("outline") || text.includes("requesting")) {
+  if (text.includes("整理学习") || text.includes("evidence") || text.includes("collecting")) return "collecting_sources";
+  if (text.includes("规划大纲") || text.includes("plan") || text.includes("outline") || text.includes("requesting")) {
     return "building_outline";
   }
   if (text.includes("saving") || text.includes("roadmap")) return "building_roadmap";

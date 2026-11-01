@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orbit 支持</title>
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <main class="wrap">
+    <p><a href="index.html">← 返回首页</a></p>
+    <article>
+      <h1>Orbit 支持说明</h1>
+      <blockquote>上架前替换 [支持邮箱] 和 [支持 URL]。</blockquote>
+
+      <h2>获取帮助</h2>
+      <ul>
+        <li>邮箱：[支持邮箱]</li>
+        <li>支持页面：[支持 URL]</li>
+      </ul>
+      <p>请在邮件中提供：使用的平台（Windows / Web）、Orbit 版本、问题发生时间、操作步骤、错误提示或截图。</p>
+      <p><strong>请勿发送密码、API Key、管理 token 或完整账号凭据。</strong></p>
+
+      <h2>常见问题</h2>
+
+      <h3>AI 生成失败</h3>
+      <ul>
+        <li>检查服务器 <code>/healthz</code> 是否返回 <code>aiConfigured: true</code>。</li>
+        <li>确认服务端 AI 网关地址、密钥和模型配置有效。</li>
+        <li>稍后重试；上游模型可能临时超时。</li>
+      </ul>
+
+      <h3>无法登录</h3>
+      <ul>
+        <li>确认服务器正常且网络可达。</li>
+        <li>确认邮箱和密码正确。</li>
+        <li>如果是自部署服务，检查 <code>ORBIT_PUBLIC_ORIGIN</code> 与实际访问域名是否一致。</li>
+      </ul>
+
+      <h3>数据在哪里</h3>
+      <ul>
+        <li>桌面端本地学习数据保存在应用数据目录。</li>
+        <li>自部署服务端数据保存在 PostgreSQL 和 <code>/data</code> 持久化卷。</li>
+        <li>管理员应使用 <code>deploy/backup.sh</code> 定期备份。</li>
+      </ul>
+
+      <h2>数据删除</h2>
+      <p>通过 [支持邮箱] 提交删除请求，并提供账号邮箱和必要的身份验证信息。删除后不可恢复。</p>
+    </article>
+    <footer>Copyright © 2026 Verruckt</footer>
+  </main>
+</body>
+</html>

@@ -10,6 +10,91 @@ use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
 use uuid::Uuid;
 
+#[cfg(test)]
+mod restore_regressions {
+    use super::*;
+    use crate::services::ingestion_service::{IngestInput, IngestionService};
+    use crate::state::{AppPaths, AppState};
+
+    #[tokio::test]
+    async fn completed_download_without_documents_is_retried_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new_with_secrets(
+            AppPaths::new(dir.path()),
+            Arc::new(crate::secrets::keyring_store::InMemorySecretStore::new()),
+        )
+        .await
+        .unwrap();
+        let source = IngestionService::new(&state)
+            .ingest_bytes(
+                IngestInput {
+                    filename: "restore.txt".into(),
+                    bytes: b"Geometry studies points and lines.".to_vec(),
+                    kind: crate::domain::SourceKind::File,
+                    title: None,
+                    uri: None,
+                    mime_type: Some("text/plain".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let revision: Uuid =
+            sqlx::query_scalar("SELECT id FROM source_revisions WHERE source_id = ?")
+                .bind(source.id)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        let file_id = Uuid::new_v4().to_string();
+        sqlx::query("UPDATE source_revisions SET cloud_file_id = ? WHERE id = ?")
+            .bind(&file_id)
+            .bind(revision)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        state
+            .files
+            .upsert_file_state(
+                revision,
+                source.content_hash.as_deref().unwrap(),
+                Some(&file_id),
+                None,
+                "downloaded",
+                None,
+            )
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM documents WHERE source_id = ?")
+            .bind(source.id)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let (downloaded, reindex) = state.files.download_missing().await.unwrap();
+        assert_eq!(downloaded, 0);
+        assert_eq!(reindex, vec![source.id.to_string()]);
+        IngestionService::new(&state)
+            .reindex_source(source.id, None)
+            .await
+            .unwrap();
+        assert!(state.files.pending_downloads().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn verified_download_replaces_corrupted_existing_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::new(dir.path());
+        let saved = blobs.put_bytes(b"verified content").await.unwrap();
+        tokio::fs::write(blobs.full_path(&saved.relative_path), b"broken content")
+            .await
+            .unwrap();
+        blobs.put_bytes(b"verified content").await.unwrap();
+        assert_eq!(
+            blobs.get_bytes(&saved.relative_path).await.unwrap(),
+            b"verified content"
+        );
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileSyncSummary {
@@ -57,7 +142,8 @@ impl CloudFileSyncService {
     /// Upload new local revisions and download revisions pulled from another
     /// device. Returns the source ids whose local index must be rebuilt.
     pub async fn sync(&self) -> Result<FileSyncSummary, AppError> {
-        let account = self.cloud.account_state().await?;
+        let _transition = self.cloud.transition.read().await;
+        let account = self.cloud.account_state_unlocked().await?;
         if !account.logged_in
             || !account.sync_enabled
             || !account
@@ -72,6 +158,9 @@ impl CloudFileSyncService {
                 reindex_source_ids: Vec::new(),
             });
         }
+        self.cloud
+            .check_profile_owner(account.user_id.ok_or(AppError::CloudSessionExpired)?, true)
+            .await?;
         let uploaded = self.upload_pending().await?;
         let (downloaded, reindex_source_ids) = self.download_missing().await?;
         Ok(FileSyncSummary {
@@ -165,6 +254,13 @@ impl CloudFileSyncService {
             }
         }
 
+        self.cloud
+            .authorized_json(
+                Method::POST,
+                &format!("/api/v1/files/{file_id}/complete"),
+                Some(&json!({})),
+            )
+            .await?;
         sqlx::query(
             "UPDATE source_revisions SET cloud_file_id = ?, cloud_object_key = ? WHERE id = ?",
         )
@@ -191,7 +287,13 @@ impl CloudFileSyncService {
         let mut reindex = Vec::new();
         for row in rows {
             let relative_path = BlobStore::relative_path_for_hash(&row.content_hash);
-            if self.blobs.exists(&relative_path).await {
+            let valid_local = match self.blobs.get_bytes(&relative_path).await {
+                Ok(bytes) => {
+                    bytes.len() as i64 == row.size_bytes && sha256_hex(&bytes) == row.content_hash
+                }
+                Err(_) => false,
+            };
+            if valid_local {
                 self.set_local_blob_path(row.id, &relative_path).await?;
                 self.upsert_file_state(
                     row.id,
@@ -202,6 +304,7 @@ impl CloudFileSyncService {
                     None,
                 )
                 .await?;
+                reindex.push(row.source_id.to_string());
                 continue;
             }
             match self.download_one(&row, &relative_path).await {
@@ -236,7 +339,7 @@ impl CloudFileSyncService {
             .get("download_url")
             .and_then(Value::as_str)
             .ok_or_else(|| AppError::CloudUnavailable("missing download_url".into()))?;
-        let response = self
+        let mut response = self
             .http
             .get(download_url)
             .send()
@@ -248,10 +351,27 @@ impl CloudFileSyncService {
                 response.status()
             )));
         }
-        let bytes = response
-            .bytes()
+        if row.size_bytes <= 0 || row.size_bytes > 50 * 1024 * 1024 {
+            return Err(AppError::InvalidInput(
+                "cloud file exceeds import limit".into(),
+            ));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|error| AppError::Network(error.to_string()))?;
+            .map_err(|e| AppError::Network(e.to_string()))?
+        {
+            if chunk.len() > (row.size_bytes as usize).saturating_sub(bytes.len()) {
+                return Err(AppError::InvalidInput(
+                    "cloud file exceeds declared size".into(),
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if bytes.len() as i64 != row.size_bytes {
+            return Err(AppError::InvalidInput("cloud file size mismatch".into()));
+        }
         let actual_hash = sha256_hex(&bytes);
         if actual_hash != row.content_hash {
             return Err(AppError::CloudSyncConflict(format!(
@@ -297,7 +417,7 @@ impl CloudFileSyncService {
              JOIN sources s ON s.id = r.source_id \
              LEFT JOIN cloud_file_sync f ON f.source_revision_id = r.id \
              WHERE r.cloud_file_id IS NOT NULL \
-               AND (f.status IS NULL OR f.status IN ('pending', 'failed')) \
+               AND (f.status IS NULL OR f.status IN ('pending', 'failed') OR s.status != 'ready' OR NOT EXISTS (SELECT 1 FROM documents d WHERE d.source_id = s.id) OR EXISTS (SELECT 1 FROM source_index_state i WHERE i.source_id = s.id AND i.status != 'ready')) \
              ORDER BY r.created_at ASC LIMIT 50",
         )
         .fetch_all(&self.pool)

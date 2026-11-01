@@ -224,7 +224,7 @@ impl ProviderRegistry {
         self.capabilities(&provider).await
     }
 
-    /// The offline provider is a real backend provider, not a frontend fake.
+    /// Deterministic offline implementation; never a real AI model.
     /// It is persisted so foreign keys such as `embeddings.provider_id` are
     /// satisfied, but it is hidden from the user-managed provider list.
     async fn ensure_mock_provider(&self) -> Result<(), AppError> {
@@ -240,9 +240,15 @@ impl ProviderRegistry {
     pub async fn default_chat_provider(
         &self,
     ) -> Result<(ProviderConfig, Arc<dyn ChatProvider>), AppError> {
-        match self.ai_mode().await? {
+        let mode = self.ai_mode().await?;
+        if require_real_ai() && mode == AiMode::Offline {
+            return Err(AppError::InvalidInput(
+                "ORBIT_REQUIRE_AI=1 requires a real provider, but AI mode is offline".into(),
+            ));
+        }
+        match mode {
             AiMode::Offline => self.mock_chat_provider().await,
-            AiMode::Byok => self.byok_or_mock_chat_provider().await,
+            AiMode::Byok => self.byok_chat_provider().await,
             AiMode::Cloud => {
                 if let Some(cloud) = &self.cloud {
                     if self.cloud_ai_ready(cloud).await {
@@ -258,10 +264,12 @@ impl ProviderRegistry {
                         ));
                     }
                     tracing::warn!(
-                        "Verruckt Cloud AI is not currently usable; falling back to the next available provider"
+                        "学涯云 AI is selected but not currently usable; no provider fallback is performed"
                     );
                 }
-                self.byok_or_mock_chat_provider().await
+                Err(AppError::CloudUnavailable(
+                    "Cloud AI is temporarily unavailable; retry when the connection recovers.".into(),
+                ))
             }
         }
     }
@@ -269,9 +277,15 @@ impl ProviderRegistry {
     pub async fn default_embedding_provider(
         &self,
     ) -> Result<(ProviderConfig, Arc<dyn EmbeddingProvider>), AppError> {
-        match self.ai_mode().await? {
+        let mode = self.ai_mode().await?;
+        if require_real_ai() && mode == AiMode::Offline {
+            return Err(AppError::InvalidInput(
+                "ORBIT_REQUIRE_AI=1 requires a real provider, but AI mode is offline".into(),
+            ));
+        }
+        match mode {
             AiMode::Offline => self.mock_embedding_provider().await,
-            AiMode::Byok => self.byok_or_mock_embedding_provider().await,
+            AiMode::Byok => self.byok_embedding_provider().await,
             AiMode::Cloud => {
                 if let Some(cloud) = &self.cloud {
                     if self.cloud_ai_ready(cloud).await {
@@ -287,23 +301,16 @@ impl ProviderRegistry {
                         ));
                     }
                 }
-                self.byok_or_mock_embedding_provider().await
+                Err(AppError::CloudUnavailable(
+                    "Cloud AI embeddings are temporarily unavailable; retry when the connection recovers.".into(),
+                ))
             }
         }
     }
 
     pub async fn is_mock_active(&self) -> Result<bool, AppError> {
-        match self.ai_mode().await? {
-            AiMode::Offline => Ok(true),
-            AiMode::Cloud => Ok(self.cloud.is_none()),
-            AiMode::Byok => {
-                let provider = provider_repo::first_enabled_provider(&self.pool).await?;
-                match provider {
-                    None => Ok(true),
-                    Some(provider) => Ok(self.api_key(&provider).await.is_err()),
-                }
-            }
-        }
+        let (config, _) = self.default_chat_provider().await?;
+        Ok(is_mock_config(&config))
     }
 
     pub async fn ai_mode(&self) -> Result<AiMode, AppError> {
@@ -312,19 +319,46 @@ impl ProviderRegistry {
         )
         .fetch_optional(&self.pool)
         .await?;
-        Ok(value
-            .and_then(|value| serde_json::from_str::<String>(&value).ok())
-            .map(|value| AiMode::parse(&value))
-            // Preserve the pre-integration behaviour: use a configured BYOK
-            // provider when present, otherwise the offline mock.
-            .unwrap_or(AiMode::Byok))
+        if let Some(value) = value.and_then(|value| serde_json::from_str::<String>(&value).ok()) {
+            return Ok(AiMode::parse(&value));
+        }
+
+        // The setting is normally written by `settings_service::initialize`.
+        // This fallback keeps direct registry calls account-aware too.
+        if let Some(cloud) = &self.cloud {
+            if let Ok(account) = cloud.account_state().await {
+                if account.user_id.is_some() {
+                    if let Some(entitlements) = account.entitlements.as_ref() {
+                        let limit = entitlements.monthly_ai_credits;
+                        let used = entitlements.monthly_ai_credits_used;
+                        if entitlements.official_ai && limit > 0 && used < limit {
+                            return Ok(AiMode::Cloud);
+                        }
+                    }
+                }
+            }
+        }
+
+        let byok_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM providers WHERE enabled = 1 AND base_url NOT LIKE 'mock://%'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(if byok_count > 0 {
+            AiMode::Byok
+        } else {
+            AiMode::Offline
+        })
     }
 
     async fn cloud_ai_ready(&self, cloud: &CloudAccountClient) -> bool {
+        if !matches!(cloud.account_state().await, Ok(state) if state.state == crate::cloud::models::CloudSessionState::Authenticated) {
+            return false;
+        }
         match cloud.cached_entitlements().await {
             Ok(entitlements) if entitlements.feature("official_ai") => {
                 let limit = entitlements.limit("monthly_ai_credits");
-                limit <= 0 || entitlements.usage.monthly_ai_credits_used < limit
+                limit > 0 && entitlements.usage.monthly_ai_credits_used < limit
             }
             _ => false,
         }
@@ -334,12 +368,12 @@ impl ProviderRegistry {
         let now = utc_now();
         ProviderConfig {
             id: CLOUD_PROVIDER_ID,
-            display_name: "Verruckt Cloud".to_owned(),
+            display_name: "学涯云".to_owned(),
             base_url: self
                 .cloud
                 .as_ref()
                 .map(|cloud| cloud.base_url())
-                .unwrap_or_else(|| "http://127.0.0.1:8080".to_owned()),
+                .unwrap_or_else(crate::cloud::default_cloud_base_url),
             chat_model: CLOUD_CHAT_MODEL.to_owned(),
             embedding_model: CLOUD_EMBEDDING_MODEL.to_owned(),
             api_key_ref: None,
@@ -353,6 +387,9 @@ impl ProviderRegistry {
     async fn mock_chat_provider(
         &self,
     ) -> Result<(ProviderConfig, Arc<dyn ChatProvider>), AppError> {
+        if std::env::var("ORBIT_REQUIRE_AI").as_deref() == Ok("1") {
+            return Err(AppError::InvalidInput("Real AI is required but no usable provider is available".into()));
+        }
         self.ensure_mock_provider().await?;
         Ok((mock_config(), Arc::new(MockProvider::new())))
     }
@@ -360,37 +397,37 @@ impl ProviderRegistry {
     async fn mock_embedding_provider(
         &self,
     ) -> Result<(ProviderConfig, Arc<dyn EmbeddingProvider>), AppError> {
+        if std::env::var("ORBIT_REQUIRE_AI").as_deref() == Ok("1") {
+            return Err(AppError::InvalidInput("Real AI is required but no usable provider is available".into()));
+        }
         self.ensure_mock_provider().await?;
         Ok((mock_config(), Arc::new(MockProvider::new())))
     }
 
-    async fn byok_or_mock_chat_provider(
+    async fn byok_chat_provider(
         &self,
     ) -> Result<(ProviderConfig, Arc<dyn ChatProvider>), AppError> {
         match provider_repo::first_enabled_provider(&self.pool).await? {
-            None => self.mock_chat_provider().await,
+            None => Err(AppError::InvalidInput(
+                "BYOK mode is selected but no provider is configured. Add a model provider in settings or switch to offline mode.".into(),
+            )),
             Some(provider) => match self.chat_provider(&provider).await {
                 Ok(chat) => Ok((provider, chat)),
-                Err(AppError::ProviderAuth) => {
-                    tracing::warn!(
-                        provider = %provider.id,
-                        "provider has no usable API key; using the offline mock provider"
-                    );
-                    self.mock_chat_provider().await
-                }
+                Err(AppError::ProviderAuth) => Err(AppError::ProviderAuth),
                 Err(error) => Err(error),
             },
         }
     }
 
-    async fn byok_or_mock_embedding_provider(
+    async fn byok_embedding_provider(
         &self,
     ) -> Result<(ProviderConfig, Arc<dyn EmbeddingProvider>), AppError> {
         match provider_repo::first_enabled_provider(&self.pool).await? {
-            None => self.mock_embedding_provider().await,
+            None => Err(AppError::InvalidInput(
+                "BYOK mode is selected but no provider is configured. Add a model provider in settings or switch to offline mode.".into(),
+            )),
             Some(provider) => match self.embedding_provider(&provider).await {
                 Ok(embedding) => Ok((provider, embedding)),
-                Err(AppError::ProviderAuth) => self.mock_embedding_provider().await,
                 Err(error) => Err(error),
             },
         }
@@ -497,4 +534,8 @@ pub fn mock_config() -> ProviderConfig {
 
 pub fn is_mock_config(provider: &ProviderConfig) -> bool {
     provider.base_url.starts_with("mock://")
+}
+
+pub fn require_real_ai() -> bool {
+    std::env::var("ORBIT_REQUIRE_AI").as_deref() == Ok("1")
 }

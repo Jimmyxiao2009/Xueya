@@ -18,62 +18,63 @@ pub mod state;
 pub mod sync;
 pub mod util;
 
-use cloud::commands::{
-    cloud_account_state, cloud_get_ai_usage, cloud_get_entitlements, cloud_get_me,
-    cloud_list_devices, cloud_login, cloud_logout, cloud_register, cloud_remove_device,
-    cloud_set_base_url, cloud_set_sync_enabled,
-};
-use ipc::{
-    app::{app_bootstrap, app_get_info},
-    courses::{
-        course_adaptations, course_create, course_delete, course_get, course_learner_states,
-        course_list, course_node_complete, course_node_get, course_node_prepare, course_regenerate,
-    },
-    demo::competition_demo_seed,
-    jobs::{job_cancel, job_get, job_list, job_subscribe},
-    knowledge::{
-        knowledge_get_object, knowledge_get_related, knowledge_retrieval_debug, knowledge_search,
-    },
-    learning::{learning_finish, learning_respond, learning_start},
-    providers::{
-        provider_delete, provider_list, provider_stream_chat, provider_test, provider_upsert,
-    },
-    quiz::{quiz_list, quiz_submit},
-    search::search_web,
-    settings::{settings_get, settings_update},
-    sources::{
-        source_delete, source_import_bytes, source_import_files, source_import_url, source_list,
-        source_reindex, source_summarize,
-    },
-    tutor::{tutor_send, tutor_send_stream},
-    vector_diagnostics::vector_backend_info,
-};
-use services::ingestion_service::IngestionService;
-use sync::commands::{sync_conflicts, sync_files_now, sync_now, sync_status};
-use tauri::{Emitter, Manager};
+#[cfg(feature = "desktop")]
+mod desktop {
+    use super::*;
+    use cloud::commands::{
+        cloud_account_state, cloud_get_ai_usage, cloud_get_entitlements, cloud_get_me,
+        cloud_list_devices, cloud_login, cloud_logout, cloud_register, cloud_remove_device,
+        cloud_set_base_url, cloud_set_sync_enabled,
+    };
+    use ipc::{
+        app::{app_bootstrap, app_get_info},
+        courses::{
+            course_adaptations, course_create, course_delete, course_get, course_learner_states,
+            course_list, course_node_complete, course_node_get, course_node_prepare,
+            course_regenerate,
+        },
+        demo::competition_demo_seed,
+        jobs::{job_cancel, job_get, job_list, job_subscribe},
+        knowledge::{
+            knowledge_get_object, knowledge_get_related, knowledge_retrieval_debug,
+            knowledge_search,
+        },
+        learning::{learning_finish, learning_respond, learning_start},
+        providers::{
+            provider_delete, provider_list, provider_stream_chat, provider_test, provider_upsert,
+        },
+        quiz::{quiz_list, quiz_submit},
+        search::search_web,
+        settings::{settings_get, settings_update},
+        sources::{
+            source_delete, source_import_bytes, source_import_files, source_import_url,
+            source_list, source_reindex, source_summarize,
+        },
+        tutor::{tutor_send, tutor_send_stream},
+        vector_diagnostics::vector_backend_info,
+    };
+    use services::ingestion_service::IngestionService;
+    use sync::commands::{sync_conflicts, sync_files_now, sync_now, sync_status};
+    use tauri::{Emitter, Manager};
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .try_init();
+    #[cfg_attr(mobile, tauri::mobile_entry_point)]
+    pub fn run() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .try_init();
 
-    let builder = tauri::Builder::default();
+        let builder = tauri::Builder::default();
 
-    #[cfg(not(target_os = "android"))]
-    let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
+        #[cfg(not(target_os = "android"))]
+        let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
 
-    let result = builder
+        let result = builder
         .setup(|app| {
             let handle = app.handle().clone();
             let state = tauri::async_runtime::block_on(bootstrap::build_state(&handle))?;
-            if let Err(error) = tauri::async_runtime::block_on(bootstrap::seed_demo_routes(&state))
-            {
-                tracing::warn!(%error, "could not seed the demo routes");
-            }
             // The core cloud client stays Tauri-free so headless tests can link
             // it; this is the only place that forwards its events to the WebView.
             let mut cloud_events = state.cloud.subscribe();
@@ -197,7 +198,10 @@ pub fn run() {
         ])
         .run(tauri::generate_context!());
 
-    if let Err(error) = result {
-        tracing::error!("Verruckt exited with error: {error}");
+        if let Err(error) = result {
+            tracing::error!("Verruckt exited with error: {error}");
+        }
     }
 }
+#[cfg(feature = "desktop")]
+pub use desktop::run;

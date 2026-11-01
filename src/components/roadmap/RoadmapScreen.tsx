@@ -1,10 +1,13 @@
+import { contentStatusLabel } from "@/lib/nodeMeta";
 import { useMemo, type CSSProperties, type Ref } from "react";
 import type { LearningRoute, RouteDetail } from "@/api";
 import { Icon } from "@/components/ui/Icon";
-import { Lighthouse } from "@/components/ui/Lighthouse";
 import { chapterTitle, nodeFace } from "@/lib/format";
 import { nodeMeta } from "@/lib/nodeMeta";
 import { completedPath, roadGeometry } from "@/lib/roadPath";
+import { useThemeStore } from "@/stores/themeStore";
+import { LighthouseRoadmapScreen } from "./LighthouseRoadmapScreen";
+import { RoadmapNodeIcon } from "@/components/ui/RoadmapNodeIcon";
 
 interface RoadmapScreenProps {
   route: LearningRoute;
@@ -23,7 +26,12 @@ interface RoadmapScreenProps {
  * The roadmap. This is the product's home: a hand-drawn dotted path with
  * floating nodes, not a dashboard or a list.
  */
-export function RoadmapScreen({
+export function RoadmapScreen(props: RoadmapScreenProps) {
+  const motif = useThemeStore((state) => state.visualMotif);
+  return motif === "lighthouse" ? <LighthouseRoadmapScreen {...props} /> : <BuoyRoadmapScreen {...props} />;
+}
+
+function BuoyRoadmapScreen({
   route,
   detail,
   preview = false,
@@ -38,7 +46,6 @@ export function RoadmapScreen({
   const completedCount = nodes.filter((node) => node.status === "completed").length;
   const currentNodeId =
     route.currentNodeId ?? nodes.find((node) => node.status !== "completed")?.id ?? null;
-  const activeIndex = nodes.findIndex((node) => node.id === currentNodeId);
 
   return (
     <main
@@ -73,19 +80,6 @@ export function RoadmapScreen({
               style={{ opacity: completedCount > 0 ? 1 : 0 }}
             />
           </svg>
-          {/* The lighthouse beam: a single cone of warm light that finds the
-              current node and leaves the rest of the sea in fog. Nodes sit at
-              x=68 (even) / x=332 (odd) out of a 400-wide road. */}
-          {currentNodeId && activeIndex >= 0 ? (
-            <div
-              className="light-beam"
-              aria-hidden="true"
-              style={{
-                top: geometry.stopTop(activeIndex) - 130,
-                left: `${((activeIndex % 2 === 0 ? 68 : 332) / 400) * 100}%`,
-              }}
-            />
-          ) : null}
           {nodes.map((node, index) => {
             const done = node.status === "completed";
             const current = !done && node.id === currentNodeId;
@@ -111,12 +105,7 @@ export function RoadmapScreen({
                   aria-label={`打开${node.title}`}
                   onClick={(event) => onOpenNode?.(node.id, event.currentTarget)}
                 >
-                  <span className="node-buoy">
-                    <span className={`node ${variant}`}>
-                      <Icon name={face.icon} />
-                      {current ? <span className="node-orbit" /> : null}
-                    </span>
-                  </span>
+                  <RoadmapNodeIcon state={done ? "lit" : current ? "current" : node.kind === "review" ? "review" : "unlit"} variant={variant} icon={face.icon} />
                 </button>
                 <button
                   className="stop-info"
@@ -126,7 +115,7 @@ export function RoadmapScreen({
                     <span className={`info-face${current ? " now-card" : ""}`}>
                       <span className={`tag ${face.tone}`}>{face.tag}</span>
                       <h3>{node.title}</h3>
-                      <p>{face.meta}</p>
+                      <p>{contentStatusLabel(node) ?? face.meta}</p>
                       {current ? (
                         <span className="next-arrow">
                           <Icon name="arrow" />
@@ -145,7 +134,7 @@ export function RoadmapScreen({
       </section>
       <div className="home-footer">
         <span>
-          <Lighthouse height={20} /> orbit
+          学涯
         </span>
         <span>左右滑动，切换学习路线</span>
       </div>

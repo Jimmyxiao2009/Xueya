@@ -15,6 +15,11 @@ pub const SCHEMA_VERSION: i64 = 1;
 pub trait SyncEntityAdapter: Send + Sync {
     fn entity_type(&self) -> &'static str;
     async fn load(&self, pool: &SqlitePool, entity_id: &str) -> Result<Option<Value>, AppError>;
+    async fn load_tx(
+        &self,
+        conn: &mut sqlx::SqliteConnection,
+        entity_id: &str,
+    ) -> Result<Option<Value>, AppError>;
     async fn apply(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -43,6 +48,18 @@ impl TableAdapter {
             id_column: "id",
         }
     }
+
+    pub const fn new_with_id_column(
+        entity_type: &'static str,
+        table: &'static str,
+        id_column: &'static str,
+    ) -> Self {
+        Self {
+            entity_type,
+            table,
+            id_column,
+        }
+    }
 }
 
 #[async_trait]
@@ -55,6 +72,18 @@ impl SyncEntityAdapter for TableAdapter {
         let sql = format!("SELECT * FROM {} WHERE {} = ?", self.table, self.id_column);
         let row = bind_id(sqlx::query(&sql), entity_id)
             .fetch_optional(pool)
+            .await?;
+        Ok(row.as_ref().map(row_to_json))
+    }
+
+    async fn load_tx(
+        &self,
+        conn: &mut sqlx::SqliteConnection,
+        entity_id: &str,
+    ) -> Result<Option<Value>, AppError> {
+        let sql = format!("SELECT * FROM {} WHERE {} = ?", self.table, self.id_column);
+        let row = bind_id(sqlx::query(&sql), entity_id)
+            .fetch_optional(&mut *conn)
             .await?;
         Ok(row.as_ref().map(row_to_json))
     }
@@ -138,6 +167,22 @@ impl SyncEntityAdapter for CompositeAdapter {
         Ok(row.as_ref().map(row_to_json))
     }
 
+    async fn load_tx(
+        &self,
+        conn: &mut sqlx::SqliteConnection,
+        entity_id: &str,
+    ) -> Result<Option<Value>, AppError> {
+        let (first, second) = self.split(entity_id)?;
+        let sql = format!(
+            "SELECT * FROM {} WHERE {} = ? AND {} = ?",
+            self.table, self.first_key, self.second_key
+        );
+        let row = bind_id(bind_id(sqlx::query(&sql), first), second)
+            .fetch_optional(&mut *conn)
+            .await?;
+        Ok(row.as_ref().map(row_to_json))
+    }
+
     async fn apply(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -203,6 +248,17 @@ pub fn adapters() -> Vec<Arc<dyn SyncEntityAdapter>> {
         )),
         Arc::new(TableAdapter::new("source", "sources")),
         Arc::new(TableAdapter::new("source_revision", "source_revisions")),
+        // Socratic learning state: the local Core remains authoritative, but
+        // these entities must travel so another device can resume the same
+        // conversation and see the same concept mastery.
+        Arc::new(TableAdapter::new("learning_session", "learning_sessions")),
+        Arc::new(TableAdapter::new_with_id_column(
+            "mastery_state",
+            "mastery_states",
+            "node_id",
+        )),
+        Arc::new(TableAdapter::new("learning_message", "learning_messages")),
+        Arc::new(TableAdapter::new("learning_attempt", "learning_attempts")),
     ]
 }
 
@@ -258,6 +314,12 @@ async fn apply_payload(
     key_columns: &[&str],
     payload: &Value,
 ) -> Result<(), AppError> {
+    let mut payload = payload.clone();
+    // Sessions are device-local; a remote attempt must not reference a session
+    // that was never synced to this device.
+    if table == "quiz_attempts" {
+        payload["session_id"] = Value::Null;
+    }
     let object = payload.as_object().ok_or_else(|| {
         AppError::Internal(format!("sync payload for {table} is not a JSON object"))
     })?;
@@ -438,6 +500,19 @@ mod tests {
         .expect("insert course");
     }
 
+    async fn insert_course_node(pool: &SqlitePool, course: Uuid, node: Uuid) {
+        sqlx::query(
+            "INSERT INTO course_nodes (id, course_id, title, description, objective, order_hint, estimated_minutes, status, created_at, updated_at) \
+             VALUES (?, ?, 'Node', '', 'Understand', 0, 20, 'in_progress', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        )
+        .bind(node)
+        .bind(course)
+        .execute(pool)
+        .await
+        .expect("insert course node");
+    }
+
+
     #[tokio::test]
     async fn local_writes_are_journaled_with_monotonic_revisions() {
         let pool = test_pool().await;
@@ -597,4 +672,158 @@ mod tests {
         .expect("outbox");
         assert_eq!(outbox_id, local_id);
     }
+
+    #[tokio::test]
+    async fn socratic_learning_entities_are_journaled_and_registered() {
+        let pool = test_pool().await;
+        let course = uuid("00000000-0000-0000-0000-000000000006");
+        let node = uuid("00000000-0000-0000-0000-000000000007");
+        let session = uuid("00000000-0000-0000-0000-000000000008");
+        let message = uuid("00000000-0000-0000-0000-000000000009");
+        let attempt = uuid("00000000-0000-0000-0000-00000000000a");
+        insert_course(&pool, course, "Socratic").await;
+        sqlx::query(
+            "INSERT INTO course_nodes (id, course_id, title, description, objective, order_hint, estimated_minutes, status, created_at, updated_at) \
+             VALUES (?, ?, 'Node', '', 'Understand', 0, 20, 'in_progress', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        )
+        .bind(node)
+        .bind(course)
+        .execute(&pool)
+        .await
+        .expect("course node");
+        sqlx::query(
+            "INSERT INTO learning_sessions (id, course_id, node_id, status, started_at, summary_json) \
+             VALUES (?, ?, ?, 'active', '2026-01-01T00:00:00Z', '{}')",
+        )
+        .bind(session)
+        .bind(course)
+        .bind(node)
+        .execute(&pool)
+        .await
+        .expect("learning session");
+        sqlx::query(
+            "INSERT INTO learning_messages (id, session_id, role, content, metadata_json, created_at) \
+             VALUES (?, ?, 'assistant', 'hello', '{}', '2026-01-01T00:00:00Z')",
+        )
+        .bind(message)
+        .bind(session)
+        .execute(&pool)
+        .await
+        .expect("learning message");
+        sqlx::query(
+            "INSERT INTO learning_attempts (id, session_id, node_id, user_answer, evaluation_json, correctness, created_at) \
+             VALUES (?, ?, ?, 'answer', '{}', 0.5, '2026-01-01T00:00:00Z')",
+        )
+        .bind(attempt)
+        .bind(session)
+        .bind(node)
+        .execute(&pool)
+        .await
+        .expect("learning attempt");
+        sqlx::query(
+            "INSERT INTO mastery_states (node_id, mastery, attempts, updated_at) \
+             VALUES (?, 0.5, 1, '2026-01-01T00:00:00Z')",
+        )
+        .bind(node)
+        .execute(&pool)
+        .await
+        .expect("mastery state");
+
+        let types: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT entity_type FROM sync_outbox ORDER BY entity_type",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("outbox types");
+        for expected in [
+            "learning_session",
+            "learning_message",
+            "learning_attempt",
+            "mastery_state",
+        ] {
+            assert!(types.iter().any(|value| value == expected), "missing {expected}");
+            assert!(adapter_for(expected).is_some(), "missing adapter {expected}");
+        }
+    }
+
+    #[tokio::test]
+    async fn learning_session_and_conversation_round_trip_between_clients() {
+        let source = test_pool().await;
+        let target = test_pool().await;
+        let course = uuid("00000000-0000-0000-0000-00000000000b");
+        let node = uuid("00000000-0000-0000-0000-00000000000c");
+        let session = uuid("00000000-0000-0000-0000-00000000000d");
+        let message = uuid("00000000-0000-0000-0000-00000000000e");
+
+        insert_course(&source, course, "Cross device").await;
+        insert_course_node(&source, course, node).await;
+        insert_course(&target, course, "Cross device").await;
+        insert_course_node(&target, course, node).await;
+        sqlx::query(
+            "INSERT INTO learning_sessions (id, course_id, node_id, status, started_at, summary_json) \
+             VALUES (?, ?, ?, 'active', '2026-01-01T00:00:00Z', '{}')",
+        )
+        .bind(session)
+        .bind(course)
+        .bind(node)
+        .execute(&source)
+        .await
+        .expect("source session");
+        sqlx::query(
+            "INSERT INTO learning_messages (id, session_id, role, content, metadata_json, created_at) \
+             VALUES (?, ?, 'assistant', 'hello from device A', '{}', '2026-01-01T00:00:00Z')",
+        )
+        .bind(message)
+        .bind(session)
+        .execute(&source)
+        .await
+        .expect("source message");
+        sqlx::query(
+            "INSERT INTO mastery_states (node_id, mastery, attempts, updated_at) \
+             VALUES (?, 0.6, 2, '2026-01-01T00:00:00Z')",
+        )
+        .bind(node)
+        .execute(&source)
+        .await
+        .expect("source mastery");
+
+        for (entity, local_id) in [
+            ("learning_session", hex_id(&session)),
+            ("learning_message", hex_id(&message)),
+            ("mastery_state", hex_id(&node)),
+        ] {
+            let adapter = adapter_for(entity).expect("adapter");
+            let mut payload = adapter
+                .load(&source, &local_id)
+                .await
+                .expect("load")
+                .expect("row");
+            payload["schema_version"] = json!(SCHEMA_VERSION);
+            let mut tx = target.begin().await.expect("tx");
+            adapter
+                .apply(&mut tx, &local_id, &payload)
+                .await
+                .expect("apply");
+            tx.commit().await.expect("commit");
+        }
+
+        let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_sessions")
+            .fetch_one(&target)
+            .await
+            .expect("session count");
+        let messages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_messages")
+            .fetch_one(&target)
+            .await
+            .expect("message count");
+        assert_eq!(sessions, 1);
+        assert_eq!(messages, 1);
+        let mastery = adapter_for("mastery_state")
+            .expect("mastery adapter")
+            .load(&target, &hex_id(&node))
+            .await
+            .expect("load mastery");
+        assert!(mastery.is_some());
+    }
+
+
 }

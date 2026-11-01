@@ -51,9 +51,10 @@ src/components/settings/CloudAccountSection.tsx
   network error leaves the refresh token in the keyring, so offline learning
   continues and a later refresh can recover.
 
-Cloud base URL defaults to `VERRUCKT_CLOUD_URL` or
-`http://127.0.0.1:8080`. It can be changed in Settings; the path must not end
-in `/v1` because the client adds `/v1` exactly once.
+Cloud base URL precedence is: runtime `VERRUCKT_CLOUD_URL`, persisted
+Settings value, then the compile-time production endpoint
+(`VERRUCKT_CLOUD_PRODUCTION_URL`). Debug builds keep localhost as the dev
+fallback. The path must not end in `/v1` because the client adds `/v1` exactly once.
 
 ---
 

@@ -41,7 +41,11 @@ impl BlobStore {
         let hash = sha256_hex(bytes);
         let relative_path = Self::relative_path(&hash);
         let destination = self.full_path(&relative_path);
-        if tokio::fs::try_exists(&destination).await.unwrap_or(false) {
+        let valid_existing = match self.get_bytes(&relative_path).await {
+            Ok(existing) => existing.len() == bytes.len() && sha256_hex(&existing) == hash,
+            Err(_) => false,
+        };
+        if valid_existing {
             return Ok(StoredBlob {
                 hash,
                 relative_path,
@@ -51,16 +55,13 @@ impl BlobStore {
         if let Some(parent) = destination.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let temporary = destination.with_extension("tmp");
+        let temporary = destination.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
         let mut file = tokio::fs::File::create(&temporary).await?;
         file.write_all(bytes).await?;
-        file.flush().await?;
+        file.sync_all().await?;
         drop(file);
         match tokio::fs::rename(&temporary, &destination).await {
             Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let _ = tokio::fs::remove_file(&temporary).await;
-            }
             Err(error) => return Err(AppError::Io(error.to_string())),
         }
         Ok(StoredBlob {
@@ -76,7 +77,17 @@ impl BlobStore {
                 "blob path traversal rejected".into(),
             ));
         }
-        Ok(tokio::fs::read(self.full_path(relative_path)).await?)
+        use tokio::io::AsyncReadExt;
+        const MAX_BYTES: usize = 50 * 1024 * 1024;
+        let file = tokio::fs::File::open(self.full_path(relative_path)).await?;
+        let mut bytes = Vec::new();
+        file.take((MAX_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .await?;
+        if bytes.len() > MAX_BYTES {
+            return Err(AppError::InvalidInput("blob exceeds import limit".into()));
+        }
+        Ok(bytes)
     }
 
     pub async fn exists(&self, relative_path: &str) -> bool {

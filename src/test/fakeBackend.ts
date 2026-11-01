@@ -153,7 +153,9 @@ export class FakeBackend {
   questions = new Map<string, FakeQuestion[]>();
   adaptations = new Map<string, unknown[]>();
   jobs = new Map<string, Record<string, unknown>>();
-  sessions = new Map<string, { nodeId: string; answered: number }>();
+  sessions = new Map<string, { nodeId: string; answered: number; mastery: number; evidence: number }>();
+  sessionMessages = new Map<string, Array<{ id: string; role: string; content: string; metadataJson: string; createdAt: string }>>();
+  completedSessions = new Set<string>();
   sources: unknown[] = [];
   providers: Array<{
     id: string;
@@ -165,10 +167,24 @@ export class FakeBackend {
     apiKey: string | null;
     protocol: string;
   }> = [];
-  settings: { searchProvider: string; braveApiKey: string | null; aiMode: string } = {
+  settings: {
+    searchProvider: string;
+    braveApiKey: string | null;
+    tavilyApiKey: string | null;
+    serperApiKey: string | null;
+    searxngUrl: string;
+    aiMode: string;
+    aiModeExplicit: boolean;
+    syncExplicit: boolean;
+  } = {
     searchProvider: "none",
     braveApiKey: null,
+    tavilyApiKey: null,
+    serperApiKey: null,
+    searxngUrl: "",
     aiMode: "offline",
+    aiModeExplicit: false,
+    syncExplicit: false,
   };
   cloudAccount: {
     state: "restoring" | "authenticated" | "degradedOffline" | "signedOut";
@@ -203,6 +219,7 @@ export class FakeBackend {
     creditsRemaining: 100000,
   };
   private cloudCredentials = new Map<string, string>();
+  private syncDesiredEnabled = false;
   calls: string[] = [];
 
   constructor() {
@@ -350,6 +367,17 @@ export class FakeBackend {
       cloudStorageBytesUsed: 0,
       plan: "pro",
     };
+      if (!this.settings.aiModeExplicit) {
+        this.settings.aiMode = entitlements.officialAi
+          ? "cloud"
+          : this.providers.some((provider) => provider.enabled)
+            ? "byok"
+            : "offline";
+      }
+      if (!this.settings.syncExplicit) {
+        this.syncDesiredEnabled = entitlements.cloudSync;
+      }
+      const syncEnabled = this.syncDesiredEnabled && entitlements.cloudSync;
     this.cloudAccount = {
       state: "authenticated",
       loggedIn: true,
@@ -357,7 +385,7 @@ export class FakeBackend {
       plan: "pro",
       entitlements,
       device,
-      syncEnabled: this.cloudAccount.syncEnabled,
+        syncEnabled,
       baseUrl: this.cloudAccount.baseUrl,
       lastSuccessfulRefreshAt: NOW,
     };
@@ -383,7 +411,12 @@ export class FakeBackend {
           providerCount: 1,
           sourceCount: this.sources.length,
           courseCount: this.routes.length,
-          searchConfigured: Boolean(this.settings.braveApiKey),
+          searchConfigured: Boolean(
+            this.settings.braveApiKey ||
+              this.settings.tavilyApiKey ||
+              this.settings.serperApiKey ||
+              this.settings.searxngUrl,
+          ),
         };
       case "competition_demo_seed": {
         const route = this.routes.find((entry) => entry.id === "route-geometry");
@@ -473,15 +506,56 @@ export class FakeBackend {
         return [];
       case "course_adaptations":
         return this.adaptations.get(id ?? "") ?? [];
-      case "learning_start": {
-        const node = this.findNode(String(input.nodeId));
-        if (!node) throw { code: "not_found", message: "node not found", retryable: false };
-        const sessionId = `session-${this.sessions.size + 1}`;
-        this.sessions.set(sessionId, { nodeId: node.id, answered: 0 });
-        return { sessionId, lesson: this.lessonDto(node), mastery: 0 };
-      }
-      case "learning_finish":
-        return null;
+        case "learning_start": {
+          const node = this.findNode(String(input.nodeId));
+          if (!node) throw { code: "not_found", message: "node not found", retryable: false };
+          const existingId = [...this.sessions.entries()]
+            .find(([id, session]) => session.nodeId === node.id && !this.completedSessions.has(id))?.[0];
+          if (existingId) {
+            const session = this.sessions.get(existingId)!;
+            const lesson = this.lessonDto(node);
+            return {
+              sessionId: existingId,
+              lesson,
+              mastery: session.mastery,
+              resumed: true,
+              messages: this.sessionMessages.get(existingId) ?? [],
+              openingTurn: null,
+              openingError: null,
+            };
+          }
+          const sessionId = `session-${this.sessions.size + 1}`;
+          this.sessions.set(sessionId, { nodeId: node.id, answered: 0, mastery: 0, evidence: 0 });
+          const lesson = this.lessonDto(node);
+          const opening = {
+            message: `先不急着记定义。关于「${node.title}」，我想先请你判断：${lesson.diagnosticQuestion}\n\n你会怎么解释？`,
+            suggestedAction: "ask",
+            diagnosis: null,
+            diagnosisDetail: null,
+            citations: [],
+            grounding: "model_knowledge",
+            generatedBy: "mock",
+            routeUpdated: false,
+            insertedNodeId: null,
+            adaptation: null,
+            masteryDelta: 0,
+            mastery: 0,
+            readyToComplete: false,
+          };
+          this.sessionMessages.set(sessionId, [{ id: `msg-${sessionId}-0`, role: "assistant", content: opening.message, metadataJson: "{}", createdAt: NOW }]);
+          return {
+            sessionId,
+            lesson,
+            mastery: 0,
+            resumed: false,
+            messages: this.sessionMessages.get(sessionId),
+            openingTurn: opening,
+            openingError: null,
+          };
+        }
+        case "learning_finish":
+          this.completedSessions.add(String(input.sessionId));
+          return null;
       case "quiz_list":
         return this.questions.get(String(args?.nodeId)) ?? [];
       case "quiz_submit": {
@@ -545,37 +619,71 @@ export class FakeBackend {
           adaptation: null,
           insertedNodeId: null,
         };
-      case "tutor_send":
-      case "tutor_send_stream": {
-        const session = this.sessions.get(String(input.sessionId));
-        const node = session ? this.findNode(session.nodeId) : undefined;
-        const confused = /不懂|不会|不明白|困惑|为什么/.test(String(input.message));
-        // Mirrors the offline provider: confusion is a diagnosis, and a
-        // diagnosis puts practice on the roadmap.
-        const adaptation =
-          confused && node ? this.insertReview(node, "导师发现理解偏差") : null;
-        return {
-          message: confused
-            ? "我们换个角度想：先看它的定义，再看一个反例。"
-            : "收到。我会根据你的回答继续提问。",
-          suggestedAction: confused ? "explain" : "continue",
-          diagnosis: confused ? "学习者主动表示不理解" : null,
-          diagnosisDetail: confused
-            ? {
-                kind: "LowConfidence",
-                knowledgePointIds: [],
-                confidence: 0.8,
-                severity: 0.5,
-                explanation: "学习者主动表示不理解",
-              }
-            : null,
-          citations: [],
-          grounding: "model_knowledge",
-          generatedBy: "mock",
-          insertedNodeId: null,
-          adaptation,
-        };
-      }
+        case "tutor_send":
+        case "tutor_send_stream": {
+          const session = this.sessions.get(String(input.sessionId));
+          const node = session ? this.findNode(session.nodeId) : undefined;
+          const message = String(input.message);
+          const confused = /不懂|不会|不明白|困惑|为什么/.test(message);
+          const reflective = /总结|我理解|明白了|懂了|是的|对/.test(message);
+          const masteryDelta = confused ? -0.05 : reflective ? 0.25 : 0.12;
+          const evidence = session ? session.evidence + (confused ? 0 : 1) : 0;
+          const mastery = session
+            ? Math.max(0, Math.min(1, session.mastery + masteryDelta))
+            : 0;
+          if (session) {
+            session.mastery = mastery;
+            session.evidence = evidence;
+          }
+          const readyToComplete =
+            mastery >= 0.75 && evidence >= 3
+              ? true
+              : mastery >= 0.65 && evidence >= 2 && reflective;
+          const adaptation =
+            confused && node ? this.insertReview(node, "导师发现理解偏差") : null;
+            const reply = {
+              message: confused
+                ? "我们换个角度想：先看它的定义，再看一个反例。"
+                : reflective
+                  ? "很好。你刚才的解释已经形成了一条清晰的因果链；我们把这一节收束一下。"
+                  : "收到。我会根据你的回答继续提问。",
+              suggestedAction: confused ? "explain" : reflective ? "summarize" : "continue",
+              diagnosis: confused ? "学习者主动表示不理解" : null,
+              diagnosisDetail: confused
+                ? {
+                    kind: "LowConfidence",
+                    knowledgePointIds: [],
+                    confidence: 0.8,
+                    severity: 0.5,
+                    explanation: "学习者主动表示不理解",
+                  }
+                : reflective
+                  ? {
+                      kind: "Mastered",
+                      knowledgePointIds: [],
+                      confidence: 0.8,
+                      severity: 0.2,
+                      explanation: "学习者用自己的话建立了理解",
+                    }
+                  : null,
+              citations: [],
+              grounding: "model_knowledge",
+              generatedBy: "mock",
+              insertedNodeId: null,
+              adaptation,
+              masteryDelta,
+              mastery,
+              readyToComplete,
+            };
+            if (session) {
+              const sessionId = String(input.sessionId);
+              const messages = this.sessionMessages.get(sessionId) ?? [];
+              messages.push({ id: `msg-${sessionId}-u-${messages.length}`, role: "user", content: message, metadataJson: "{}", createdAt: NOW });
+              messages.push({ id: `msg-${sessionId}-a-${messages.length}`, role: "assistant", content: reply.message, metadataJson: JSON.stringify({ suggestedAction: reply.suggestedAction }), createdAt: NOW });
+              this.sessionMessages.set(sessionId, messages);
+            }
+            return reply;
+        }
       case "source_list":
         return this.sources;
       case "source_import_bytes":
@@ -610,6 +718,9 @@ export class FakeBackend {
         return {
           searchProvider: this.settings.searchProvider,
           hasBraveApiKey: Boolean(this.settings.braveApiKey),
+          hasTavilyApiKey: Boolean(this.settings.tavilyApiKey),
+          hasSerperApiKey: Boolean(this.settings.serperApiKey),
+          searxngUrl: this.settings.searxngUrl,
           aiMode: this.settings.aiMode,
         };
       case "settings_update": {
@@ -619,12 +730,25 @@ export class FakeBackend {
         if (typeof input.braveApiKey === "string" && input.braveApiKey) {
           this.settings.braveApiKey = input.braveApiKey;
         }
+        if (typeof input.tavilyApiKey === "string" && input.tavilyApiKey) {
+          this.settings.tavilyApiKey = input.tavilyApiKey;
+        }
+        if (typeof input.serperApiKey === "string" && input.serperApiKey) {
+          this.settings.serperApiKey = input.serperApiKey;
+        }
+        if (typeof input.searxngUrl === "string") {
+          this.settings.searxngUrl = input.searxngUrl;
+        }
         if (typeof input.aiMode === "string") {
           this.settings.aiMode = input.aiMode;
+            this.settings.aiModeExplicit = true;
         }
         return {
           searchProvider: this.settings.searchProvider,
           hasBraveApiKey: Boolean(this.settings.braveApiKey),
+          hasTavilyApiKey: Boolean(this.settings.tavilyApiKey),
+          hasSerperApiKey: Boolean(this.settings.serperApiKey),
+          searxngUrl: this.settings.searxngUrl,
           aiMode: this.settings.aiMode,
         };
       }
@@ -655,7 +779,7 @@ export class FakeBackend {
           plan: null,
           entitlements: null,
           device: null,
-          syncEnabled: this.cloudAccount.syncEnabled,
+            syncEnabled: false,
           baseUrl: this.cloudAccount.baseUrl,
           lastSuccessfulRefreshAt: null,
         };
@@ -685,11 +809,12 @@ export class FakeBackend {
         return this.cloudState();
       case "cloud_set_sync_enabled":
         this.cloudAccount.syncEnabled = Boolean(args?.enabled);
+          this.settings.syncExplicit = true;
         return this.cloudState();
       case "sync_status":
         return {
           loggedIn: this.cloudAccount.loggedIn,
-          syncEnabled: this.cloudAccount.syncEnabled,
+            syncEnabled: this.cloudAccount.syncEnabled,
           cloudSyncEntitled: Boolean(
             (this.cloudAccount.entitlements as { cloudSync?: boolean } | null)?.cloudSync,
           ),

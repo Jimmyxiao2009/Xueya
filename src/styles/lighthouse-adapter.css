@@ -1,0 +1,34 @@
+/* Color-scheme adaptation of the recovered scene; dark retains the source colors. */
+:root[data-motif="lighthouse"] { --atmosphere-haze: 139, 165, 177; }
+:root[data-motif="lighthouse"][data-theme="light"] .lighthouse-home {
+  --sea-deep: var(--bg);
+  --sea-surface: var(--panel);
+  background: linear-gradient(165deg, var(--panel), var(--bg) 55%, var(--paper-strong));
+}
+:root[data-motif="lighthouse"][data-theme="light"] :is(.header-wordmark, .origin-caption > span, .lighthouse-home .roadhead h2, .lighthouse-home .stop-info h3) { color: var(--text); }
+:root[data-motif="lighthouse"][data-theme="light"] :is(.origin-caption > small, .lighthouse-home .roadhead > span, .lighthouse-home .stop-info p, .lighthouse-home .tag, .lighthouse-home .endnote, .lighthouse-home .home-footer) { color: var(--muted); }
+:root[data-motif="lighthouse"][data-theme="light"] .lighthouse-home .now-card .tag,
+:root[data-motif="lighthouse"][data-theme="light"] .lighthouse-home [data-beacon-state="lit"] .tag,
+:root[data-motif="lighthouse"][data-theme="light"] .lighthouse-home .next-arrow { color: var(--accent); }
+:root[data-motif="lighthouse"][data-theme="light"] .lighthouse-home .info-face.now-card { background: var(--panel); border-color: var(--line); }
+:root[data-motif="lighthouse"][data-theme="light"] .lighthouse-home .path path { stroke: color-mix(in srgb, var(--muted) 30%, transparent); }
+:root[data-motif="lighthouse"][data-theme="light"] .lighthouse-home .path :is(.completed-path, .approaching-path) { stroke: var(--accent); }
+:root[data-motif="lighthouse"][data-theme="light"] .origin-path path { stroke: color-mix(in srgb, var(--accent) 40%, transparent); }
+:root[data-motif="lighthouse"][data-theme="light"] .atmosphere-edge { opacity: .12; }
+
+/* Apply the recovered atmosphere to the current OOBE without changing its flow. */
+:root[data-motif="lighthouse"] .onboarding { position: relative; isolation: isolate; }
+:root[data-motif="lighthouse"][data-theme] .onboarding > .atmosphere { inset: 0; }
+:root[data-icons="lighthouse"] .conversation-world .navigation-halo { display: none; }
+
+/* Tower icons keep their original silhouette on either scene background. */
+:root[data-icons="lighthouse"][data-theme] .node-hit .tower-node {
+  width: 64px; height: 84px; border: 0; border-radius: 0;
+  background: none; box-shadow: none; transform: none;
+  opacity: 1; animation: none; filter: none;
+}
+:root[data-icons="lighthouse"][data-theme] .node-hit .tower-node::before { display: none; }
+:root[data-icons="lighthouse"][data-theme] .node-hit:hover .tower-node { scale: 1; filter: brightness(1.12); }
+:root[data-icons="lighthouse"][data-theme] .node-hit:active .tower-node { box-shadow: none; }
+.app-wordmark { position: relative; z-index: 1; flex-shrink: 0; color: var(--text); font: 20px var(--font-display); letter-spacing: .08em; }
+.appearance-label { margin: 20px 0 0; color: var(--muted); font-size: 12px; }

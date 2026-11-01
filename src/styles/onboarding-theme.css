@@ -1,0 +1,29 @@
+/* Shared motif adapter and learning semantics; no theme-specific component copies. */
+.navigation-anchor{position:relative;display:inline-grid;place-items:center;isolation:isolate;color:var(--beacon-core);vertical-align:middle}
+.navigation-anchor svg,.navigation-anchor .lighthouse{position:relative;z-index:1;object-fit:contain;max-width:none;filter:drop-shadow(0 0 12px var(--beacon-glow))}
+.navigation-halo{position:absolute;width:180%;height:130%;border-radius:50%;background:radial-gradient(ellipse,var(--beacon-glow),transparent 67%);pointer-events:none}
+[data-anchor="lighthouse"] .navigation-halo{clip-path:polygon(50% 30%,100% 0,100% 80%,50% 50%,0 80%,0 0)}
+[data-anchor="buoy"] .navigation-halo{border-bottom:1px solid var(--navigation-line);transform:scaleY(.4) translateY(85%)}
+.conversation-world{position:relative;display:grid;place-items:center;min-height:190px;width:100%;flex-shrink:0;background:radial-gradient(ellipse at center,var(--beacon-soft-glow),transparent 65%)}
+.navigation-horizon{position:absolute;bottom:18px;width:85%;height:1px;background:linear-gradient(90deg,transparent,var(--navigation-line-muted),transparent)}
+.conversation .onboarding-content{width:100%}
+.conversation input,.conversation select{width:100%;display:block;min-height:48px;padding:12px 14px;border:1px solid var(--paper-border);border-radius:10px;color:var(--text-primary);background:var(--paper-raised);font:inherit;margin:12px 0 22px}
+.conversation label{display:block;color:var(--text-secondary);font-size:14px}
+.conversation-reply{border-left:2px solid var(--beacon-core);padding-left:16px}
+.conversation progress{width:100%;accent-color:var(--mastery-learning)}
+.onboarding-appearance{margin-top:24px;color:var(--text-secondary)}
+.onboarding-appearance summary{cursor:pointer;font-size:13px;min-height:40px}
+.motif-choices{display:flex;gap:12px;margin:16px 0}
+.motif-choices button,.theme-system{flex:1;border-bottom:1px solid var(--paper-border);min-height:44px;padding:8px;color:var(--text-secondary)}
+.motif-choices button[aria-pressed=true],.theme-system[aria-pressed=true]{color:var(--beacon-core);border-color:var(--beacon-core)}
+.theme-system{grid-column:1/-1}
+
+@media(min-width:900px){
+#root:has(>.onboarding){max-width:none}
+.onboarding{display:grid;grid-template-columns:minmax(260px,1fr) minmax(340px,540px);grid-template-rows:auto 1fr auto;gap:0 7vw;padding:40px 8vw;align-items:center}
+.onboarding-brand{grid-column:1/-1}
+.onboarding .conversation-world{grid-column:1;grid-row:2;min-height:440px}
+.onboarding .conversation-world .navigation-anchor{transform:scale(1.65)}
+.onboarding-content{grid-column:2;grid-row:2;max-width:540px}
+.onboarding-footer{grid-column:1/-1}
+}

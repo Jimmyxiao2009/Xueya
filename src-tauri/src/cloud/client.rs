@@ -29,6 +29,12 @@ const DEVICE_NAME_KEY: &str = "cloud_device_name";
 const DEVICE_PLATFORM_KEY: &str = "cloud_device_platform";
 const BASE_URL_KEY: &str = "cloud_base_url";
 const SYNC_ENABLED_KEY: &str = "cloud_sync_enabled";
+const SYNC_EXPLICIT_KEY: &str = "cloud_sync_preference_explicit";
+/// Production Cloud endpoint used only by release builds when neither the
+/// runtime env override nor a persisted user endpoint is available. The
+/// compile-time value is intentionally not a secret; API tokens never live in
+/// this repository.
+const PRODUCTION_CLOUD_BASE_URL_FALLBACK: &str = "https://cloud.verruckt.app";
 
 pub struct CloudAccountClient {
     http: reqwest::Client,
@@ -39,6 +45,7 @@ pub struct CloudAccountClient {
     refresh_lock: AsyncMutex<()>,
     restore_lock: AsyncMutex<()>,
     events: broadcast::Sender<CloudEvent>,
+    pub(crate) transition: AsyncRwLock<()>,
 }
 
 impl CloudAccountClient {
@@ -58,6 +65,7 @@ impl CloudAccountClient {
             refresh_lock: AsyncMutex::new(()),
             restore_lock: AsyncMutex::new(()),
             events,
+            transition: AsyncRwLock::new(()),
         }
     }
 
@@ -66,10 +74,18 @@ impl CloudAccountClient {
     }
 
     pub async fn initialize(&self) -> Result<(), AppError> {
-        if let Some(value) = self.setting_string(BASE_URL_KEY).await? {
-            if let Ok(normalized) = normalize_cloud_base_url(&value) {
-                *self.base_url.write().expect("base url lock") = normalized;
+        // Precedence: explicit runtime env/dev override, then persisted user
+        // endpoint, then the compile-time production default. The constructor
+        // already installed the env/compile-time fallback.
+        if runtime_cloud_base_url().is_none() {
+            if let Some(value) = self.setting_string(BASE_URL_KEY).await? {
+                if let Ok(normalized) = normalize_cloud_base_url(&value) {
+                    *self.base_url.write().expect("base url lock") = normalized;
+                }
             }
+        }
+        if let Some(snapshot) = self.load_snapshot().await? {
+            self.check_profile_owner(snapshot.user_id, true).await?;
         }
         if self.secrets.secret_exists(REFRESH_TOKEN_REF).await? {
             self.session.write().await.state = CloudSessionState::Restoring;
@@ -86,30 +102,62 @@ impl CloudAccountClient {
     }
 
     pub async fn set_base_url(&self, value: &str) -> Result<CloudAccountState, AppError> {
+        let _transition = self.transition.write().await;
+        let _refresh = self.refresh_lock.lock().await;
         let normalized = normalize_cloud_base_url(value)?;
         *self.base_url.write().expect("base url lock") = normalized.clone();
         self.set_setting_string(BASE_URL_KEY, &normalized).await?;
-        self.clear_session().await;
-        self.account_state().await
+        self.clear_session().await?;
+        self.reset_sync_session().await?;
+        self.anonymous_state().await
     }
 
     pub async fn sync_enabled(&self) -> Result<bool, AppError> {
-        Ok(self
-            .setting_string(SYNC_ENABLED_KEY)
-            .await?
-            .and_then(|value| value.parse::<bool>().ok())
-            .unwrap_or(false))
+        self.setting_bool(SYNC_ENABLED_KEY)
+            .await
+            .map(|value| value.unwrap_or(false))
     }
 
     pub async fn set_sync_enabled(&self, enabled: bool) -> Result<CloudAccountState, AppError> {
-        self.set_setting_string(SYNC_ENABLED_KEY, if enabled { "true" } else { "false" })
-            .await?;
+        let _transition = self.transition.write().await;
+        if enabled {
+            let account = self.account_state_unlocked().await?;
+            let user_id = account.user_id.ok_or(AppError::CloudSessionExpired)?;
+            self.check_profile_owner(user_id, true).await?;
+            if !account
+                .entitlements
+                .as_ref()
+                .map(|entitlements| entitlements.cloud_sync)
+                .unwrap_or(false)
+            {
+                return Err(AppError::CloudEntitlementRequired);
+            }
+        }
+        self.set_setting_bool(SYNC_EXPLICIT_KEY, true).await?;
+        self.set_setting_bool(SYNC_ENABLED_KEY, enabled).await?;
         self.emit(
             "cloud_sync_setting_changed",
             serde_json::json!({ "enabled": enabled }),
         );
-        self.account_state().await
+        self.account_state_unlocked().await
     }
+
+    /// First eligible login enables sync automatically. A user toggle is
+    /// explicit and is never overwritten by later login/restore cycles.
+    pub async fn reconcile_sync_policy(&self, account: &CloudAccountState) -> Result<(), AppError> {
+        let explicit = self.setting_bool(SYNC_EXPLICIT_KEY).await?.unwrap_or(false);
+        if !explicit {
+            let entitled = account
+                .entitlements
+                .as_ref()
+                .map(|entitlements| entitlements.cloud_sync)
+                .unwrap_or(false)
+                && account.user_id.is_some();
+            self.set_setting_bool(SYNC_ENABLED_KEY, entitled).await?;
+        }
+        Ok(())
+    }
+
 
     /// Return a currently valid access token, refreshing in the background if
     /// the short-lived token has expired. This is the only path that reads the
@@ -155,7 +203,7 @@ impl CloudAccountClient {
         let refresh_token = match self.secrets.get_secret(REFRESH_TOKEN_REF).await {
             Ok(token) => token,
             Err(AppError::NotFound(_)) => {
-                self.clear_session().await;
+                self.clear_session().await?;
                 return Err(AppError::CloudSessionExpired);
             }
             Err(error) => return Err(error),
@@ -164,16 +212,34 @@ impl CloudAccountClient {
             refresh_token,
             device: Some(self.device_input().await?),
         };
-        let response = match self
-            .http
-            .post(format!("{}/api/v1/auth/refresh", self.base_url()))
-            .json(&body)
-            .send()
-            .await
-        {
-            Ok(response) => response,
-            Err(error) => {
-                let error = network_error(error);
+        let mut response = None;
+        let mut last_error = None;
+        for attempt in 0..=1 {
+            match self
+                .http
+                .post(format!("{}/api/v1/auth/refresh", self.base_url()))
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(value) => {
+                    response = Some(value);
+                    break;
+                }
+                Err(error) if attempt == 0 && (error.is_timeout() || error.is_connect()) => {
+                    last_error = Some(error);
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    break;
+                }
+            }
+        }
+        let response = match response {
+            Some(response) => response,
+            None => {
+                let error = network_error(last_error.expect("refresh request error"));
                 self.mark_degraded().await;
                 return Err(error);
             }
@@ -181,7 +247,7 @@ impl CloudAccountClient {
 
         if response.status() == StatusCode::UNAUTHORIZED {
             let error = self.map_response(response).await;
-            self.clear_session().await;
+            self.clear_session().await?;
             return Err(error);
         }
         if !response.status().is_success() {
@@ -202,6 +268,8 @@ impl CloudAccountClient {
         email: String,
         password: String,
     ) -> Result<CloudAccountState, AppError> {
+        let _transition = self.transition.write().await;
+        let refresh_guard = self.refresh_lock.lock().await;
         validate_credentials(&email, &password)?;
         let body = serde_json::to_value(CloudRegisterRequest {
             email: email.trim().to_owned(),
@@ -214,8 +282,13 @@ impl CloudAccountClient {
             .json()
             .await
             .map_err(|error| AppError::CloudUnavailable(error.to_string()))?;
+        self.check_profile_owner(auth.user.id, true).await?;
+        self.clear_session().await?;
         self.store_auth(&auth).await?;
-        self.account_state().await
+        drop(refresh_guard);
+        let account = self.account_state_unlocked().await?;
+        self.reconcile_sync_policy(&account).await?;
+        self.account_state_unlocked().await
     }
 
     pub async fn login(
@@ -223,6 +296,8 @@ impl CloudAccountClient {
         email: String,
         password: String,
     ) -> Result<CloudAccountState, AppError> {
+        let _transition = self.transition.write().await;
+        let refresh_guard = self.refresh_lock.lock().await;
         validate_credentials(&email, &password)?;
         let body = serde_json::to_value(CloudLoginRequest {
             email: email.trim().to_owned(),
@@ -236,20 +311,39 @@ impl CloudAccountClient {
             .json()
             .await
             .map_err(|error| AppError::CloudUnavailable(error.to_string()))?;
+        self.check_profile_owner(auth.user.id, true).await?;
+        self.clear_session().await?;
         self.store_auth(&auth).await?;
-        self.account_state().await
+        drop(refresh_guard);
+        let account = self.account_state_unlocked().await?;
+        self.reconcile_sync_policy(&account).await?;
+        self.account_state_unlocked().await
     }
 
     pub async fn logout(&self) -> Result<CloudAccountState, AppError> {
+        let _transition = self.transition.write().await;
         let refresh_token = self.secrets.get_secret(REFRESH_TOKEN_REF).await.ok();
         let body = serde_json::to_value(CloudLogoutRequest { refresh_token })
             .map_err(|error| AppError::Internal(error.to_string()))?;
-        let _ = self.public_json("/api/v1/auth/logout", &body).await;
-        self.clear_session().await;
-        self.account_state().await
+        if self.secrets.secret_exists(REFRESH_TOKEN_REF).await? {
+            // Do not report success if server revocation failed.
+            self.authorized_json(Method::POST, "/api/v1/auth/logout", Some(&body))
+                .await?;
+        }
+        let _refresh = self.refresh_lock.lock().await;
+        self.clear_session().await?;
+        self.reset_sync_session().await?;
+        let account = self.anonymous_state().await?;
+        self.reconcile_sync_policy(&account).await?;
+        self.anonymous_state().await
     }
 
     pub async fn account_state(&self) -> Result<CloudAccountState, AppError> {
+        let _transition = self.transition.read().await;
+        self.account_state_unlocked().await
+    }
+
+    pub(crate) async fn account_state_unlocked(&self) -> Result<CloudAccountState, AppError> {
         // Fast path: a fully restored, in-memory session.
         {
             let session = self.session.read().await;
@@ -263,7 +357,7 @@ impl CloudAccountClient {
         }
 
         if !self.secrets.secret_exists(REFRESH_TOKEN_REF).await? {
-            self.clear_session().await;
+            self.clear_session().await?;
             return self.anonymous_state().await;
         }
 
@@ -296,7 +390,7 @@ impl CloudAccountClient {
             Err(error) if is_auth_error(&error) => {
                 // Explicit 401 / invalid refresh / reuse detection: the
                 // credential is no longer trustworthy.
-                self.clear_session().await;
+                self.clear_session().await?;
                 self.anonymous_state().await
             }
             Err(error) => {
@@ -350,7 +444,7 @@ impl CloudAccountClient {
             plan: None,
             entitlements: None,
             device: None,
-            sync_enabled: self.sync_enabled().await?,
+            sync_enabled: false,
             base_url: self.base_url(),
             last_successful_refresh_at: None,
         })
@@ -368,10 +462,12 @@ impl CloudAccountClient {
         state: CloudSessionState,
     ) -> Result<CloudAccountState, AppError> {
         let session = self.session.read().await;
+        let stored_sync = self.sync_enabled().await?;
         let entitlements = session
             .entitlements
             .as_ref()
             .map(CloudEntitlementsDto::from);
+        let sync_enabled = effective_sync_enabled(stored_sync, entitlements.as_ref());
         Ok(CloudAccountState {
             state,
             logged_in: state == CloudSessionState::Authenticated && session.user.is_some(),
@@ -383,7 +479,7 @@ impl CloudAccountClient {
                 .map(|value| value.plan.clone()),
             entitlements,
             device: session.device.clone().map(CloudDeviceDto::from),
-            sync_enabled: self.sync_enabled().await?,
+            sync_enabled,
             base_url: self.base_url(),
             last_successful_refresh_at: session.last_successful_refresh_at,
         })
@@ -402,6 +498,8 @@ impl CloudAccountClient {
             .entitlements
             .as_ref()
             .map(CloudEntitlementsDto::from);
+        let stored_sync = self.sync_enabled().await?;
+        let sync_enabled = effective_sync_enabled(stored_sync, entitlements.as_ref());
         Ok(CloudAccountState {
             state,
             logged_in: state == CloudSessionState::Authenticated,
@@ -415,11 +513,12 @@ impl CloudAccountClient {
             }),
             entitlements,
             device: None,
-            sync_enabled: self.sync_enabled().await?,
+            sync_enabled,
             base_url: self.base_url(),
             last_successful_refresh_at: Some(snapshot.last_successful_refresh_at),
         })
     }
+
 
     async fn load_snapshot(&self) -> Result<Option<CloudAccountSnapshot>, AppError> {
         let payload: Option<String> =
@@ -468,6 +567,7 @@ impl CloudAccountClient {
     }
 
     pub async fn me(&self) -> Result<CloudMeResponse, AppError> {
+        let _transition = self.transition.read().await;
         self.refresh_me().await?;
         let session = self.session.read().await;
         Ok(CloudMeResponse {
@@ -476,6 +576,7 @@ impl CloudAccountClient {
     }
 
     pub async fn entitlements(&self) -> Result<CloudEntitlements, AppError> {
+        let _transition = self.transition.read().await;
         self.refresh_entitlements().await?;
         let session = self.session.read().await;
         session
@@ -488,6 +589,7 @@ impl CloudAccountClient {
     /// use this to avoid a `GET /me/entitlements` before every request; the
     /// gateway still enforces the real quota server-side.
     pub async fn cached_entitlements(&self) -> Result<CloudEntitlements, AppError> {
+        let _transition = self.transition.read().await;
         {
             let session = self.session.read().await;
             if let Some(entitlements) = session.entitlements.clone() {
@@ -504,7 +606,13 @@ impl CloudAccountClient {
                 return Ok(entitlements);
             }
         }
-        self.entitlements().await
+        self.refresh_entitlements().await?;
+        self.session
+            .read()
+            .await
+            .entitlements
+            .clone()
+            .ok_or(AppError::CloudSessionExpired)
     }
 
     pub async fn devices(&self) -> Result<Vec<CloudDevice>, AppError> {
@@ -521,6 +629,7 @@ impl CloudAccountClient {
     }
 
     pub async fn ai_usage(&self) -> Result<CloudAiUsage, AppError> {
+        let _transition = self.transition.read().await;
         let response = self
             .authorized_json(Method::GET, "/api/v1/ai/usage", None)
             .await?;
@@ -583,6 +692,7 @@ impl CloudAccountClient {
         body: Option<&Value>,
     ) -> Result<Response, AppError> {
         let mut refreshed = false;
+        let mut transient_retried = false;
         loop {
             let token = self.access_token().await?;
             let mut request = self
@@ -596,6 +706,14 @@ impl CloudAccountClient {
             if response.status() == StatusCode::UNAUTHORIZED && !refreshed {
                 refreshed = true;
                 self.force_refresh().await?;
+                continue;
+            }
+            if matches!(response.status(), StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT)
+                && method == Method::GET
+                && !transient_retried
+            {
+                transient_retried = true;
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 continue;
             }
             if !response.status().is_success() {
@@ -648,6 +766,7 @@ impl CloudAccountClient {
     }
 
     async fn store_auth(&self, auth: &CloudAuthResponse) -> Result<(), AppError> {
+        self.check_profile_owner(auth.user.id, true).await?;
         self.secrets
             .set_secret(REFRESH_TOKEN_REF, &auth.refresh_token)
             .await?;
@@ -662,13 +781,21 @@ impl CloudAccountClient {
         }
         let (mut previous_usage, mut previous_entitlements) = {
             let session = self.session.read().await;
-            (session.usage.clone(), session.entitlements.clone())
+            if session.user.as_ref().map(|user| user.id) == Some(auth.user.id) {
+                (session.usage.clone(), session.entitlements.clone())
+            } else {
+                (None, None)
+            }
         };
         // A refresh response does not carry entitlements. Keep the last known
         // non-secret snapshot so a later transient failure can still show the
         // account and plan instead of degrading to anonymous.
         if previous_usage.is_none() || previous_entitlements.is_none() {
-            if let Some(snapshot) = self.load_snapshot().await? {
+            if let Some(snapshot) = self
+                .load_snapshot()
+                .await?
+                .filter(|snapshot| snapshot.user_id == auth.user.id)
+            {
                 if previous_usage.is_none() {
                     previous_usage = snapshot.usage;
                 }
@@ -700,8 +827,8 @@ impl CloudAccountClient {
         Ok(())
     }
 
-    async fn clear_session(&self) {
-        let _ = self.secrets.delete_secret(REFRESH_TOKEN_REF).await;
+    async fn clear_session(&self) -> Result<(), AppError> {
+        self.secrets.delete_secret(REFRESH_TOKEN_REF).await?;
         self.clear_snapshot().await;
         {
             let mut session = self.session.write().await;
@@ -712,6 +839,7 @@ impl CloudAccountClient {
             "cloud_session_state_changed",
             serde_json::json!({ "state": "signedOut" }),
         );
+        Ok(())
     }
 
     pub async fn device_id(&self) -> Result<Option<Uuid>, AppError> {
@@ -735,6 +863,42 @@ impl CloudAccountClient {
             platform,
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
         })
+    }
+
+    /// A local profile has one cloud owner. Keep this binding after logout so
+    /// signing into another account can never upload the previous owner's data.
+    pub(crate) async fn check_profile_owner(
+        &self,
+        user_id: Uuid,
+        bind: bool,
+    ) -> Result<(), AppError> {
+        let owner = format!("{}|{}", self.base_url(), user_id);
+        if let Some(existing) = self.setting_string("cloud_profile_owner").await? {
+            if existing != owner {
+                return Err(AppError::CloudAuth(
+                    "此本地资料库属于另一个云端账号或服务器，请使用独立的本地资料库。".into(),
+                ));
+            }
+        } else if bind {
+            self.set_setting_string("cloud_profile_owner", &owner)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn reset_sync_session(&self) -> Result<(), AppError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM app_settings WHERE key = ?")
+            .bind(DEVICE_ID_KEY)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE sync_state SET account_id = NULL, bootstrap_done = 0, cursor = '' WHERE id = 1",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn setting_string(&self, key: &str) -> Result<Option<String>, AppError> {
@@ -761,6 +925,19 @@ impl CloudAccountClient {
         Ok(())
     }
 
+    async fn setting_bool(&self, key: &str) -> Result<Option<bool>, AppError> {
+        Ok(self
+            .setting_string(key)
+            .await?
+            .and_then(|value| value.parse::<bool>().ok()))
+    }
+
+    async fn set_setting_bool(&self, key: &str, value: bool) -> Result<(), AppError> {
+        self.set_setting_string(key, if value { "true" } else { "false" })
+            .await
+    }
+
+
     fn emit(&self, event: &str, payload: Value) {
         let _ = self.events.send(CloudEvent {
             event: event.to_owned(),
@@ -768,6 +945,11 @@ impl CloudAccountClient {
         });
     }
 }
+
+fn effective_sync_enabled(stored: bool, entitlements: Option<&CloudEntitlementsDto>) -> bool {
+    stored && entitlements.is_some_and(|entitlements| entitlements.cloud_sync)
+}
+
 
 /// Only credential/session failures may delete the refresh token. Transient
 /// network or gateway failures must keep it so offline learning can continue.
@@ -802,10 +984,35 @@ async fn parse_json<T: DeserializeOwned>(response: Response) -> Result<T, AppErr
 }
 
 pub fn default_cloud_base_url() -> String {
+    if let Some(url) = runtime_cloud_base_url() {
+        return url;
+    }
+    if cfg!(debug_assertions) {
+        "http://127.0.0.1:8080".to_owned()
+    } else {
+        production_cloud_base_url()
+    }
+}
+
+fn runtime_cloud_base_url() -> Option<String> {
     std::env::var("VERRUCKT_CLOUD_URL")
         .ok()
         .and_then(|value| normalize_cloud_base_url(&value).ok())
-        .unwrap_or_else(|| "http://127.0.0.1:8080".to_owned())
+}
+
+fn production_cloud_base_url() -> String {
+    option_env!("VERRUCKT_DEFAULT_CLOUD_URL")
+        .or(option_env!("VERRUCKT_CLOUD_PRODUCTION_URL"))
+        .and_then(|value| normalize_cloud_base_url(value).ok())
+        .filter(|value| is_secure_cloud_base_url(value))
+        .unwrap_or_else(|| PRODUCTION_CLOUD_BASE_URL_FALLBACK.to_owned())
+}
+
+fn is_secure_cloud_base_url(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            || matches!(url.host_str(), Some("localhost") | Some("127.0.0.1"))
+    })
 }
 
 pub fn normalize_cloud_base_url(value: &str) -> Result<String, AppError> {

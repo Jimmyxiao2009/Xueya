@@ -1,5 +1,5 @@
 /**
- * Orbit's progressive glass edges.
+ * 学涯's progressive glass edges.
  *
  * Exactly three `<i>` passes: `styles/effects.css` overrides the blur radius and
  * mask stops for `nth-child(1..3)`. Adding or removing a pass changes the look.

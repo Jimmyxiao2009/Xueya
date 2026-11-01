@@ -19,7 +19,7 @@ export const useLessonStore = create<LessonState>((set, get) => ({
     const cached = get().byNode[nodeId];
     if (cached && !force) return cached;
     if (get().loading[nodeId]) return get().byNode[nodeId] ?? null;
-    set((state) => ({ loading: { ...state.loading, [nodeId]: true } }));
+    set((state) => ({ loading: { ...state.loading, [nodeId]: true }, error: null }));
     try {
       const lesson = await api.nodePrepare(nodeId);
       set((state) => ({

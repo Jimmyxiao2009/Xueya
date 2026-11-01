@@ -15,6 +15,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/files/presign-upload", post(presign_upload))
         .route("/api/v1/files/presign-download", post(presign_download))
+        .route("/api/v1/files/{id}/complete", post(complete_upload))
         .route("/api/v1/files/{id}", delete(delete_file))
 }
 
@@ -46,4 +47,13 @@ async fn delete_file(
     Ok(Json(
         files::delete_file(&state, authenticated.user_id, file_id).await?,
     ))
+}
+
+async fn complete_upload(
+    State(state): State<AppState>,
+    authenticated: AuthenticatedUser,
+    Path(file_id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    files::complete_upload(&state, authenticated.user_id, file_id).await?;
+    Ok(Json(serde_json::json!({"complete": true})))
 }

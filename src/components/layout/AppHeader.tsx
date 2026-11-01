@@ -1,5 +1,4 @@
 import { Icon } from "@/components/ui/Icon";
-import { Lighthouse } from "@/components/ui/Lighthouse";
 import { HeaderBlur, SoftBlur } from "@/components/ui/SoftBlur";
 
 interface HeaderProps {
@@ -56,9 +55,7 @@ export function AppHeader({
         </span>
         <Icon name="chevron" />
       </button>
-      <span className="header-orbit">
-        <Lighthouse height={30} className="pulse" />
-      </span>
+      <span className="app-wordmark" aria-label="学涯">学涯</span>
     </header>
   );
 }
@@ -75,7 +72,7 @@ export function CompactHeader({
     <header className="compact-top">
       <SoftBlur />
       <button className="brand" onClick={onHome} aria-label="回到学习路线">
-        <Lighthouse height={26} /> orbit<span>.</span>
+        学涯
       </button>
       <span className="prototype">{trailing}</span>
     </header>

@@ -8,3 +8,13 @@ src-tauri/target/
 *.jks
 *.keystore
 keystore.properties
+
+# Local demo data and secrets
+.orbit-server/
+.env
+.env.local
+deploy/.env
+deploy/backups/
+deploy/orbit-demo-images.tar
+*.pfx
+*.cer

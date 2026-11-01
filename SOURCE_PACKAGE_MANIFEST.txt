@@ -1,0 +1,59 @@
+# 学涯 / Orbit Source Package Manifest
+
+- Product: 学涯 / Orbit
+- Codename: Verruckt
+- Version: 0.1.0-rc.1
+- Generated: 
+2026-09-21
+- Source archive: 学涯-Orbit-Verruckt-source-0.1.0-rc.1.zip
+- File count: 
+498
+
+## Included
+
+- src/
+- src-tauri/
+- cloud/
+- crates/
+- scripts/
+- docs/
+- deploy/
+- public/
+- reference/
+- package.json / package-lock.json
+- Cargo.toml / Cargo.lock
+- src-tauri/migrations/
+- docs/release/ (FINAL_RELEASE_REPORT.md, FREEZE_MANIFEST.md)
+- README.md
+
+## Excluded from source package
+
+- .git/
+- .github/
+- node_modules/
+- dist/
+- target/
+- src-tauri/target/
+- cloud/target/
+- crates/*/target/
+- .orbit-server/
+- promo-film/
+- store/
+- audit/ and audit-results/
+- historical *.zip archives
+- *.log / *.err / *.pid
+- .env / .env.local
+- local SQLite / database files
+
+## Secret scan
+
+- High-confidence scan completed before packaging.
+- No real OpenAI key, JWT, Bearer token, private key, or AWS key found.
+- Test fixtures may contain clearly fake example credentials such as password123 for example.com test accounts.
+
+## Notes
+
+- This is a clean source snapshot, not the old audit snapshot.
+- Verruckt Cloud server implementation and Docker deployment config are included.
+- A public hosted Verruckt Cloud instance is not included.
+- Real production upstream model is not included; local E2E uses an OpenAI-compatible mock upstream.

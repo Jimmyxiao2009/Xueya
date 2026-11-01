@@ -3,17 +3,26 @@
 //! adaptation log.
 
 use crate::domain::{
-    AdaptationEvent, KnowledgePoint, LearnerState, LessonStep, QuizAttempt, QuizQuestion,
+    AdaptationEvent, KnowledgePoint, LearnerState, LearningMessageRecord, LessonStep, QuizAttempt,
+    QuizQuestion,
 };
 use crate::error::AppError;
-use sqlx::SqlitePool;
+use sqlx::{Connection, SqlitePool};
 use uuid::Uuid;
 
 pub async fn insert_knowledge_points(
     pool: &SqlitePool,
     points: &[KnowledgePoint],
 ) -> Result<(), AppError> {
-    let mut transaction = pool.begin().await?;
+    let mut conn = pool.acquire().await?;
+    insert_knowledge_points_tx(&mut conn, points).await
+}
+
+pub async fn insert_knowledge_points_tx(
+    conn: &mut sqlx::SqliteConnection,
+    points: &[KnowledgePoint],
+) -> Result<(), AppError> {
+    let mut transaction = conn.begin().await?;
     for point in points {
         sqlx::query(
             "INSERT OR REPLACE INTO knowledge_points (id, course_id, title, description, ordinal, created_at) \
@@ -60,7 +69,16 @@ pub async fn link_node_points(
     node_id: Uuid,
     point_ids: &[Uuid],
 ) -> Result<(), AppError> {
-    let mut transaction = pool.begin().await?;
+    let mut conn = pool.acquire().await?;
+    link_node_points_tx(&mut conn, node_id, point_ids).await
+}
+
+pub async fn link_node_points_tx(
+    conn: &mut sqlx::SqliteConnection,
+    node_id: Uuid,
+    point_ids: &[Uuid],
+) -> Result<(), AppError> {
+    let mut transaction = conn.begin().await?;
     for point_id in point_ids {
         sqlx::query(
             "INSERT OR IGNORE INTO node_knowledge_points (node_id, knowledge_point_id) VALUES (?, ?)",
@@ -78,6 +96,14 @@ pub async fn points_for_node(
     pool: &SqlitePool,
     node_id: Uuid,
 ) -> Result<Vec<KnowledgePoint>, AppError> {
+    let mut conn = pool.acquire().await?;
+    points_for_node_tx(&mut conn, node_id).await
+}
+
+pub async fn points_for_node_tx(
+    conn: &mut sqlx::SqliteConnection,
+    node_id: Uuid,
+) -> Result<Vec<KnowledgePoint>, AppError> {
     Ok(sqlx::query_as::<_, KnowledgePoint>(
         "SELECT kp.id, kp.course_id, kp.title, kp.description, kp.ordinal, kp.created_at \
          FROM knowledge_points kp \
@@ -85,7 +111,7 @@ pub async fn points_for_node(
          WHERE nkp.node_id = ? ORDER BY kp.ordinal",
     )
     .bind(node_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?)
 }
 
@@ -94,7 +120,16 @@ pub async fn replace_lesson_steps(
     node_id: Uuid,
     steps: &[LessonStep],
 ) -> Result<(), AppError> {
-    let mut transaction = pool.begin().await?;
+    let mut conn = pool.acquire().await?;
+    replace_lesson_steps_tx(&mut conn, node_id, steps).await
+}
+
+pub async fn replace_lesson_steps_tx(
+    conn: &mut sqlx::SqliteConnection,
+    node_id: Uuid,
+    steps: &[LessonStep],
+) -> Result<(), AppError> {
+    let mut transaction = conn.begin().await?;
     sqlx::query("DELETE FROM lesson_steps WHERE node_id = ?")
         .bind(node_id)
         .execute(&mut *transaction)
@@ -137,6 +172,15 @@ pub async fn get_learner_state(
     course_id: Uuid,
     point_id: Uuid,
 ) -> Result<Option<LearnerState>, AppError> {
+    let mut conn = pool.acquire().await?;
+    get_learner_state_tx(&mut conn, course_id, point_id).await
+}
+
+pub async fn get_learner_state_tx(
+    conn: &mut sqlx::SqliteConnection,
+    course_id: Uuid,
+    point_id: Uuid,
+) -> Result<Option<LearnerState>, AppError> {
     Ok(sqlx::query_as::<_, LearnerState>(
         "SELECT course_id, knowledge_point_id, confidence, mastery, mistakes, attempts, \
          last_seen, next_review, updated_at FROM learner_states \
@@ -144,11 +188,19 @@ pub async fn get_learner_state(
     )
     .bind(course_id)
     .bind(point_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?)
 }
 
 pub async fn upsert_learner_state(pool: &SqlitePool, state: &LearnerState) -> Result<(), AppError> {
+    let mut conn = pool.acquire().await?;
+    upsert_learner_state_tx(&mut conn, state).await
+}
+
+pub async fn upsert_learner_state_tx(
+    conn: &mut sqlx::SqliteConnection,
+    state: &LearnerState,
+) -> Result<(), AppError> {
     sqlx::query(
         "INSERT INTO learner_states \
             (course_id, knowledge_point_id, confidence, mastery, mistakes, attempts, last_seen, next_review, updated_at) \
@@ -168,7 +220,7 @@ pub async fn upsert_learner_state(pool: &SqlitePool, state: &LearnerState) -> Re
     .bind(state.last_seen.map(|value| value.to_rfc3339()))
     .bind(state.next_review.map(|value| value.to_rfc3339()))
     .bind(state.updated_at.to_rfc3339())
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
@@ -192,7 +244,16 @@ pub async fn replace_quiz_questions(
     node_id: Uuid,
     questions: &[QuizQuestion],
 ) -> Result<(), AppError> {
-    let mut transaction = pool.begin().await?;
+    let mut conn = pool.acquire().await?;
+    replace_quiz_questions_tx(&mut conn, node_id, questions).await
+}
+
+pub async fn replace_quiz_questions_tx(
+    conn: &mut sqlx::SqliteConnection,
+    node_id: Uuid,
+    questions: &[QuizQuestion],
+) -> Result<(), AppError> {
+    let mut transaction = conn.begin().await?;
     sqlx::query("DELETE FROM quiz_questions WHERE node_id = ?")
         .bind(node_id)
         .execute(&mut *transaction)
@@ -247,6 +308,14 @@ pub async fn get_quiz_question(pool: &SqlitePool, id: Uuid) -> Result<QuizQuesti
 }
 
 pub async fn insert_quiz_attempt(pool: &SqlitePool, attempt: &QuizAttempt) -> Result<(), AppError> {
+    let mut conn = pool.acquire().await?;
+    insert_quiz_attempt_tx(&mut conn, attempt).await
+}
+
+pub async fn insert_quiz_attempt_tx(
+    conn: &mut sqlx::SqliteConnection,
+    attempt: &QuizAttempt,
+) -> Result<(), AppError> {
     sqlx::query(
         "INSERT INTO quiz_attempts \
             (id, question_id, node_id, session_id, answer_json, correct, score, feedback, created_at) \
@@ -261,7 +330,7 @@ pub async fn insert_quiz_attempt(pool: &SqlitePool, attempt: &QuizAttempt) -> Re
     .bind(attempt.score)
     .bind(&attempt.feedback)
     .bind(attempt.created_at.to_rfc3339())
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
@@ -279,6 +348,14 @@ pub async fn count_attempts_for_question(
 }
 
 pub async fn insert_adaptation(pool: &SqlitePool, event: &AdaptationEvent) -> Result<(), AppError> {
+    let mut conn = pool.acquire().await?;
+    insert_adaptation_tx(&mut conn, event).await
+}
+
+pub async fn insert_adaptation_tx(
+    conn: &mut sqlx::SqliteConnection,
+    event: &AdaptationEvent,
+) -> Result<(), AppError> {
     sqlx::query(
         "INSERT INTO adaptation_events (id, course_id, node_id, kind, reason, payload_json, created_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -290,7 +367,7 @@ pub async fn insert_adaptation(pool: &SqlitePool, event: &AdaptationEvent) -> Re
     .bind(&event.reason)
     .bind(&event.payload_json)
     .bind(event.created_at.to_rfc3339())
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
@@ -300,13 +377,22 @@ pub async fn list_adaptations(
     course_id: Uuid,
     limit: i64,
 ) -> Result<Vec<AdaptationEvent>, AppError> {
+    let mut conn = pool.acquire().await?;
+    list_adaptations_tx(&mut conn, course_id, limit).await
+}
+
+pub async fn list_adaptations_tx(
+    conn: &mut sqlx::SqliteConnection,
+    course_id: Uuid,
+    limit: i64,
+) -> Result<Vec<AdaptationEvent>, AppError> {
     Ok(sqlx::query_as::<_, AdaptationEvent>(
         "SELECT id, course_id, node_id, kind, reason, payload_json, created_at \
          FROM adaptation_events WHERE course_id = ? ORDER BY created_at DESC LIMIT ?",
     )
     .bind(course_id)
     .bind(limit)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?)
 }
 
@@ -338,6 +424,21 @@ pub async fn list_messages(
 ) -> Result<Vec<(String, String)>, AppError> {
     Ok(sqlx::query_as::<_, (String, String)>(
         "SELECT role, content FROM learning_messages WHERE session_id = ? ORDER BY created_at",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Return persisted messages with metadata so the service layer can assemble
+/// first-class [`crate::domain::LearningTurn`] values.
+pub async fn list_message_records(
+    pool: &SqlitePool,
+    session_id: Uuid,
+) -> Result<Vec<LearningMessageRecord>, AppError> {
+    Ok(sqlx::query_as::<_, LearningMessageRecord>(
+        "SELECT id, session_id, role, content, metadata_json, created_at \
+         FROM learning_messages WHERE session_id = ? ORDER BY created_at, rowid",
     )
     .bind(session_id)
     .fetch_all(pool)

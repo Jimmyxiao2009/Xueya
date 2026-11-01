@@ -22,6 +22,9 @@ pub struct AppInfoDto {
 pub struct SettingsDto {
     pub search_provider: String,
     pub has_brave_api_key: bool,
+    pub has_tavily_api_key: bool,
+    pub has_serper_api_key: bool,
+    pub searxng_url: String,
     pub ai_mode: String,
 }
 
@@ -30,6 +33,9 @@ pub struct SettingsDto {
 pub struct SettingsUpdateInput {
     pub search_provider: Option<String>,
     pub brave_api_key: Option<String>,
+    pub tavily_api_key: Option<String>,
+    pub serper_api_key: Option<String>,
+    pub searxng_url: Option<String>,
     pub ai_mode: Option<String>,
 }
 
@@ -208,6 +214,8 @@ pub struct SearchResultDto {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchWebInput {
+    #[serde(default)]
+    pub ai: bool,
     pub query: String,
     pub count: Option<usize>,
 }
@@ -533,7 +541,25 @@ pub struct LearningStartDto {
     pub session_id: Uuid,
     pub lesson: LessonDto,
     pub mastery: f64,
+    /// The agent-authored first turn. `None` means the opening could not be
+    /// generated; the UI still lets the learner use the local session and can
+    /// show a clearly-labelled local opening.
+    pub opening_turn: Option<TutorTurnDto>,
+    pub opening_error: Option<String>,
+    pub resumed: bool,
+    pub messages: Vec<ConversationMessageDto>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMessageDto {
+    pub id: Uuid,
+    pub role: String,
+    pub content: String,
+    pub metadata_json: String,
+    pub created_at: String,
+}
+
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -849,6 +875,9 @@ pub struct TutorTurnDto {
     pub route_updated: bool,
     pub inserted_node_id: Option<Uuid>,
     pub adaptation: Option<AdaptationEventDto>,
+    pub mastery_delta: f64,
+    pub mastery: f64,
+    pub ready_to_complete: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

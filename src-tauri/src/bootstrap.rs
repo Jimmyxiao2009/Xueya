@@ -1,14 +1,19 @@
 use crate::db::repo::courses as course_repo;
 use crate::error::AppError;
 use crate::services::course_service::{CourseService, RouteRequest};
-use crate::state::{AppPaths, AppState};
+#[cfg(feature = "desktop")]
+use crate::state::AppPaths;
+use crate::state::AppState;
+#[cfg(feature = "desktop")]
 use tauri::Manager;
 
+#[cfg(feature = "desktop")]
 pub async fn build_state(app: &tauri::AppHandle) -> Result<AppState, AppError> {
     let data_dir = app.path().app_data_dir().map_err(|error| {
         AppError::Internal(format!("could not resolve app data directory: {error}"))
     })?;
     let state = AppState::new(AppPaths::new(data_dir)).await?;
+    crate::services::node_agent::resume(&state).await?;
     Ok(state)
 }
 

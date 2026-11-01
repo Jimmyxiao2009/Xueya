@@ -1,7 +1,34 @@
+import type { CSSProperties } from "react";
 import lighthouseAsset from "@/assets/lighthouse.png";
 
+export type BeaconState = "unlit" | "current" | "lit" | "review";
+
+/** The same brand asset, with its lantern isolated so an unlit tower stays dark. */
+export function LighthouseBeacon({
+  state = "unlit",
+  primary = false,
+  height,
+}: {
+  state?: BeaconState;
+  primary?: boolean;
+  height?: number;
+}) {
+  return (
+    <span
+      className={`beacon beacon--${state}${primary ? " beacon--primary" : ""}`}
+      style={{ "--beacon-image": `url(${lighthouseAsset})`, ...(height ? { "--tower-height": `${height}px` } : {}) } as CSSProperties}
+      aria-hidden="true"
+    >
+      <span className="beacon-halo" />
+      <img className="beacon-tower" src={lighthouseAsset} alt="" draggable={false} />
+      <span className="beacon-lantern" />
+      <span className="beacon-ground" />
+    </span>
+  );
+}
+
 /**
- * The Verruckt lighthouse: the brand anchor and the visual identity of the AI.
+ * The 学涯 lighthouse: the brand anchor and the visual identity of the AI.
  *
  * The asset is a single lit tower, pre-cropped from the source PNG with its
  * white background made transparent so it sits cleanly in the dark fog. It is

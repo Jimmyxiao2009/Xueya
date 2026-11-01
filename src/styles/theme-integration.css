@@ -1,0 +1,47 @@
+/* Adapters between the two existing designs and the shared OOBE.
+ * Buoy: the working-tree warm-paper design + its original dark.css.
+ * Lighthouse: the already merged Dark Fog surfaces + original beam.
+ */
+:root {
+  --fog-rgb: 248,247,244;
+  --world-bg: var(--bg);
+  --world-surface: var(--panel);
+  --world-surface-elevated: var(--surface-float);
+  --text-primary: var(--text);
+  --text-secondary: var(--muted);
+  --text-muted: var(--muted);
+  --paper-bg: var(--bg);
+  --paper-raised: var(--panel);
+  --paper-border: var(--line);
+  --beacon-core: var(--accent);
+  --beacon-glow: color-mix(in srgb,var(--accent) 16%,transparent);
+  --beacon-soft-glow: color-mix(in srgb,var(--accent) 7%,transparent);
+  --navigation-line: var(--accent);
+  --navigation-line-muted: var(--line);
+  --light-halo: var(--beacon-glow);
+  --light-halo-strong: color-mix(in srgb,var(--accent) 30%,transparent);
+  --shadow-ink: var(--warm-shadow);
+  --button-bg: var(--text);
+  --button-text: var(--bg);
+}
+:root[data-theme="dark"]{--fog-rgb:34,36,32}
+:root[data-theme="dark"][data-motif="lighthouse"]{--fog-rgb:13,17,20}
+/* Lighthouse stays usable in daylight, on the existing warm-paper palette. */
+:root[data-theme="light"][data-motif="lighthouse"]{
+  --light:var(--accent);--light-soft:var(--text);
+  --fog:color-mix(in srgb,var(--muted) 5%,transparent);
+  --fog-strong:color-mix(in srgb,var(--muted) 10%,transparent);
+  --ink-veil:color-mix(in srgb,var(--bg) 72%,transparent);
+}
+/* Restored from the original Lighthouse effects.css, with only the light color tokenized. */
+.light-beam{position:absolute;left:50%;transform:translateX(-50%);width:340px;height:340px;pointer-events:none;z-index:1;background:radial-gradient(ellipse 62% 46% at 50% 62%,var(--light-halo),color-mix(in srgb,var(--accent) 5%,transparent) 42%,transparent 68%);filter:blur(2px);animation:beam-sway 9s ease-in-out infinite}
+@keyframes beam-sway{0%,100%{opacity:.85;transform:translateX(-50%) scaleX(1)}50%{opacity:1;transform:translateX(-50%) scaleX(1.06)}}
+@media(prefers-reduced-motion:reduce){.light-beam{animation:none}}
+/* The original frosted edges now follow their existing palette in either scheme. */
+:root[data-motif="lighthouse"] #root::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;background:radial-gradient(120% 55% at 50% -10%,var(--beacon-soft-glow),transparent 55%),radial-gradient(140% 90% at 50% 115%,color-mix(in srgb,var(--canvas-deep) 55%,transparent),transparent 60%)}
+.onboarding{color:var(--text)}
+.onboarding .primary{background:var(--text);color:var(--bg);box-shadow:var(--shadow-press)}
+:root[data-theme="dark"] .subject-switch:hover .subject-name{color:var(--accent)}
+/* Real generated titles can be much longer than the preview examples. */
+.app-header .subject-switch,.layer-heading .subject-switch{min-width:0;max-width:100%}
+.subject-switch>span{flex:1}

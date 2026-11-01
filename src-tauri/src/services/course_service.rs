@@ -1,8 +1,8 @@
 use crate::ai::prompts::{
-    course_plan_messages, labeled_evidence, quiz_generation_messages, LabeledEvidence, QUIZ_V1,
+    course_plan_messages,
 };
 use crate::ai::schemas::{
-    parse_json, validate_course_plan, validate_quiz_generation, CoursePlan, Lesson, QuizGeneration,
+    parse_json, validate_course_plan, CoursePlan, Lesson,
 };
 use crate::ai::structured::generate_structured;
 use crate::ai::traits::ChatRequest;
@@ -16,6 +16,8 @@ use crate::domain::{
     CourseStatus, KnowledgeObject, KnowledgeObjectKind, KnowledgePoint, LessonStep, NodeKind,
     QuizQuestion, RelationType,
 };
+use crate::domain::AiMode;
+
 use crate::error::AppError;
 use crate::jobs::manager::JobHandle;
 use crate::knowledge_fs::relation::relation;
@@ -111,14 +113,7 @@ impl<'a> CourseService<'a> {
         course_repo::delete_course(&self.state.pool, id).await
     }
 
-    /// Create a roadmap.
-    ///
-    /// Order of preference:
-    ///   1. an AI plan grounded in local evidence (when both exist),
-    ///   2. the deterministic template roadmap.
-    ///
-    /// Step 2 is not a degraded error path: it is the shipped behaviour for
-    /// every topic the learner has not imported sources for yet.
+    /// Local orchestration: real AI with sources or general knowledge; explicit offline fallback.
     pub async fn create_course(
         &self,
         request: RouteRequest,
@@ -129,32 +124,55 @@ impl<'a> CourseService<'a> {
             return Err(AppError::InvalidInput("course topic is required".into()));
         }
         if let Some(handle) = handle {
-            handle.progress(0.05, "Collecting local evidence").await?;
+            handle.progress(0.05, "正在整理学习目标和资料").await?;
         }
 
         let evidence = self.evidence_for_topic(&topic, &request.source_ids).await;
-        let planned = if evidence.is_empty() {
-            curriculum::plan_route(&request.brief())
-        } else {
-            match self.plan_with_ai(&topic, &evidence, handle).await {
-                Ok(plan) => plan,
-                Err(error) => {
-                    tracing::warn!(%error, "AI roadmap planning failed; using the deterministic template");
-                    curriculum::plan_route(&request.brief())
+        let prompt = format!("主题：{}\n目标：{}\n现有基础：{}\n学习深度：{}", topic,
+            request.goal.as_deref().unwrap_or("理解并能应用"),
+            request.experience_level.as_deref().unwrap_or("beginner"),
+            request.desired_depth.as_deref().unwrap_or("practical"));
+        let (planned, origin) = match self.plan_with_ai(&prompt, &evidence, handle).await {
+            Ok(plan) => plan,
+            Err(error) => {
+                if std::env::var("ORBIT_REQUIRE_AI").as_deref() == Ok("1") {
+                    return Err(error);
                 }
+                // Deterministic fallback is a local-only mode, not a silent
+                // disguise for a configured BYOK or Cloud provider failure.
+                if self
+                    .state
+                    .providers
+                    .ai_mode()
+                    .await
+                    .unwrap_or(AiMode::Offline)
+                    != AiMode::Offline
+                {
+                    return Err(error);
+                }
+                tracing::warn!(%error, "offline AI unavailable; using deterministic roadmap");
+                (curriculum::plan_route(&request.brief()), "deterministic".to_owned())
             }
         };
 
         if let Some(handle) = handle {
-            handle.progress(0.65, "Saving roadmap").await?;
+            handle.progress(0.85, "正在保存路线大纲").await?;
         }
-        let origin = planned.origin.as_str().to_owned();
         let course = self
             .save_route(&request, planned, &evidence, &origin)
             .await?;
 
+        if origin != "deterministic" {
+            // JIT generation: warm the first node and, when present, the next
+            // one. Other nodes are prepared when the learner approaches them,
+            // avoiding N background model calls for a brand-new roadmap.
+            let nodes = course_repo::list_nodes(&self.state.pool, course.id).await?;
+            for node in nodes.iter().take(2) {
+                super::node_agent::schedule(self.state, node.id).await?;
+            }
+        }
         if let Some(handle) = handle {
-            handle.progress(0.95, "Roadmap saved").await?;
+            handle.progress(0.95, "路线已就绪，第一节内容正在准备").await?;
         }
         Ok(course)
     }
@@ -185,18 +203,15 @@ impl<'a> CourseService<'a> {
         let knowledge = KnowledgeService::new(self.state);
         if !source_ids.is_empty() {
             match knowledge.evidence_for_sources(source_ids, topic, 12).await {
-                Ok(chunks) if !chunks.is_empty() => return chunks,
-                Ok(_) => {}
-                Err(error) => tracing::debug!(%error, "source-scoped retrieval failed"),
+                Ok(chunks) => return chunks,
+                Err(error) => {
+                    tracing::debug!(%error, "source-scoped retrieval failed; scope remains closed");
+                    return Vec::new();
+                }
             }
         }
-        match knowledge.semantic_search(topic, 12).await {
-            Ok(chunks) => chunks,
-            Err(error) => {
-                tracing::debug!(%error, "semantic search unavailable; continuing without evidence");
-                Vec::new()
-            }
-        }
+        // Empty selection means topic-only. Global knowledge use must be explicit.
+        Vec::new()
     }
 
     async fn plan_with_ai(
@@ -204,13 +219,15 @@ impl<'a> CourseService<'a> {
         topic: &str,
         evidence: &[crate::knowledge::retrieval::RetrievedChunk],
         handle: Option<&JobHandle>,
-    ) -> Result<PlannedRoute, AppError> {
+    ) -> Result<(PlannedRoute, String), AppError> {
         if let Some(handle) = handle {
-            handle.progress(0.30, "Requesting roadmap from AI").await?;
+            handle.progress(0.30, "正在规划大纲与学习路线").await?;
         }
         let known_chunk_ids: HashSet<Uuid> = evidence_id_set(evidence);
         let snippets = KnowledgeService::evidence_snippets(evidence);
         let (provider_config, chat_provider) = self.state.providers.default_chat_provider().await?;
+        crate::ai::provenance::require_real(&provider_config)?;
+        let origin = crate::ai::provenance::generation_label(&provider_config, !evidence.is_empty());
         let messages = course_plan_messages(topic, &snippets)?;
         let known = known_chunk_ids.clone();
         let plan = generate_structured::<CoursePlan, _>(
@@ -220,48 +237,7 @@ impl<'a> CourseService<'a> {
             move |plan| validate_course_plan(plan, &known),
         )
         .await?;
-        Ok(planned_route_from_ai(plan))
-    }
-
-    /// Ask the provider for quiz questions grounded in the same evidence that
-    /// produced the roadmap. A failure here is not fatal: the deterministic
-    /// template quiz is still available, and the caller decides whether to use
-    /// it. Business validation rejects empty/unsupported questions and a single
-    /// repair retry is performed by `generate_structured`.
-    async fn plan_quiz_with_ai(
-        &self,
-        node_title: &str,
-        node_objective: &str,
-        concepts: &[String],
-        evidence: &[crate::knowledge::retrieval::RetrievedChunk],
-    ) -> Result<Vec<curriculum::PlannedQuestion>, AppError> {
-        let (config, chat) = self.state.providers.default_chat_provider().await?;
-        let pairs: Vec<(Uuid, Option<String>, String)> = evidence
-            .iter()
-            .map(|item| (item.chunk.id, None, item.chunk.text.clone()))
-            .collect();
-        let labeled: Vec<LabeledEvidence> = labeled_evidence(&pairs);
-        let messages = quiz_generation_messages(node_title, node_objective, concepts, &labeled);
-        let generation = generate_structured::<QuizGeneration, _>(
-            chat.as_ref(),
-            &config.chat_model,
-            messages,
-            validate_quiz_generation,
-        )
-        .await?;
-        let _ = QUIZ_V1;
-        Ok(generation
-            .questions
-            .into_iter()
-            .map(|question| curriculum::PlannedQuestion {
-                kind: crate::domain::QuizKind::parse(&question.kind),
-                prompt: question.prompt,
-                options: question.options,
-                answer: question.answers,
-                explanation: question.explanation,
-                difficulty: question.difficulty.clamp(0.0, 1.0),
-            })
-            .collect())
+        Ok((planned_route_from_ai(plan), origin))
     }
 
     async fn save_route(
@@ -345,7 +321,7 @@ impl<'a> CourseService<'a> {
                 citations: Vec::new(),
             };
 
-            let node = CourseNode {
+            let mut node = CourseNode {
                 id: node_id,
                 course_id,
                 title: planned_node.title.clone(),
@@ -364,6 +340,7 @@ impl<'a> CourseService<'a> {
                     "evidenceChunkIds": evidence_for_node,
                     "knowledgePointId": point_id,
                     "origin": origin,
+                    "lessonOrigin": "deterministic",
                 })
                 .to_string(),
                 lesson_cache_json: Some(
@@ -397,33 +374,19 @@ impl<'a> CourseService<'a> {
                 ));
             }
 
-            let ai_quiz = if origin == "ai" {
-                match self
-                    .plan_quiz_with_ai(
-                        &planned_node.title,
-                        &planned_node.objective,
-                        &planned_node.concepts,
-                        evidence,
-                    )
-                    .await
-                {
-                    Ok(questions) if !questions.is_empty() => Some(questions),
-                    Ok(_) => None,
-                    Err(error) => {
-                        tracing::warn!(%error, node = %planned_node.title, "AI quiz generation failed; using the deterministic quiz");
-                        None
-                    }
-                }
+            let planned_questions = if origin == "deterministic" {
+                curriculum::plan_quiz(&planned_node.title, &planned_node.objective, &planned_node.concepts)
             } else {
-                None
+                // Outline-only nodes never expose template content as generated AI.
+                node.lesson_cache_json = None;
+                node.lesson_cache_hash = None;
+                let mut metadata: serde_json::Value = serde_json::from_str(&node.metadata_json).unwrap_or_default();
+                metadata["contentStatus"] = json!("pending");
+                metadata["quizOrigin"] = json!("pending");
+                metadata["lessonOrigin"] = json!("pending");
+                node.metadata_json = metadata.to_string();
+                Vec::new()
             };
-            let planned_questions = ai_quiz.unwrap_or_else(|| {
-                curriculum::plan_quiz(
-                    &planned_node.title,
-                    &planned_node.objective,
-                    &planned_node.concepts,
-                )
-            });
             for (ordinal, planned_question) in planned_questions.into_iter().enumerate() {
                 questions.push(QuizQuestion {
                     id: Uuid::new_v4(),
@@ -472,14 +435,15 @@ impl<'a> CourseService<'a> {
             })
             .collect();
 
-        course_repo::insert_course_graph(&self.state.pool, &course, &nodes, &dependencies).await?;
-        loop_repo::insert_knowledge_points(&self.state.pool, &knowledge_points).await?;
+        let mut tx = self.state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        course_repo::insert_course_graph_tx(&mut *tx, &course, &nodes, &dependencies).await?;
+        loop_repo::insert_knowledge_points_tx(&mut *tx, &knowledge_points).await?;
         for (node_id, point_ids) in &node_points {
-            loop_repo::link_node_points(&self.state.pool, *node_id, point_ids).await?;
+            loop_repo::link_node_points_tx(&mut *tx, *node_id, point_ids).await?;
         }
         for node in &nodes {
-            loop_repo::replace_lesson_steps(
-                &self.state.pool,
+            loop_repo::replace_lesson_steps_tx(
+                &mut *tx,
                 node.id,
                 &lesson_steps
                     .iter()
@@ -488,8 +452,8 @@ impl<'a> CourseService<'a> {
                     .collect::<Vec<_>>(),
             )
             .await?;
-            loop_repo::replace_quiz_questions(
-                &self.state.pool,
+            loop_repo::replace_quiz_questions_tx(
+                &mut *tx,
                 node.id,
                 &questions
                     .iter()
@@ -502,30 +466,21 @@ impl<'a> CourseService<'a> {
 
         // The first node becomes "从这里继续".
         if let Some(first) = nodes.first() {
-            course_repo::set_current_node(&self.state.pool, course_id, Some(first.id)).await?;
+            course_repo::set_current_node_tx(&mut *tx, course_id, Some(first.id)).await?;
         }
 
-        self.index_route_knowledge(&course, &nodes).await?;
+        self.index_route_knowledge(&mut tx, &course, &nodes).await?;
 
-        loop_repo::insert_adaptation(
-            &self.state.pool,
-            &AdaptationEvent::new(
-                course_id,
-                None,
-                AdaptationKind::LessonReplanned,
-                format!("路线由 {origin} 生成"),
-                json!({ "nodes": nodes.len(), "origin": origin }),
-            ),
-        )
-        .await?;
-
-        course_repo::get_course(&self.state.pool, course_id).await
+        let saved = course_repo::get_course_tx(&mut *tx, course_id).await?;
+        tx.commit().await?;
+        Ok(saved)
     }
 
     /// Mirror the roadmap into the generic knowledge graph so search, notes and
     /// the `knowledge_*` commands can see it.
     async fn index_route_knowledge(
         &self,
+        tx: &mut sqlx::SqliteConnection,
         course: &Course,
         nodes: &[CourseNode],
     ) -> Result<(), AppError> {
@@ -538,7 +493,7 @@ impl<'a> CourseService<'a> {
             created_at: course.created_at,
             updated_at: course.updated_at,
         };
-        knowledge_repo::upsert_object(&self.state.pool, &course_object).await?;
+        knowledge_repo::upsert_object_tx(&mut *tx, &course_object).await?;
 
         for node in nodes {
             let node_object = KnowledgeObject {
@@ -550,23 +505,23 @@ impl<'a> CourseService<'a> {
                 created_at: node.created_at,
                 updated_at: node.updated_at,
             };
-            knowledge_repo::upsert_object(&self.state.pool, &node_object).await?;
-            knowledge_repo::insert_relation(
-                &self.state.pool,
+            knowledge_repo::upsert_object_tx(&mut *tx, &node_object).await?;
+            knowledge_repo::insert_relation_tx(
+                &mut *tx,
                 &relation(course.id, node.id, RelationType::Contains, 1.0)?,
             )
             .await?;
-            knowledge_repo::insert_relation(
-                &self.state.pool,
+            knowledge_repo::insert_relation_tx(
+                &mut *tx,
                 &relation(node.id, course.id, RelationType::PartOf, 1.0)?,
             )
             .await?;
         }
 
-        let dependencies = course_repo::list_dependencies(&self.state.pool, course.id).await?;
+        let dependencies = course_repo::list_dependencies_tx(&mut *tx, course.id).await?;
         for dependency in &dependencies {
-            knowledge_repo::insert_relation(
-                &self.state.pool,
+            knowledge_repo::insert_relation_tx(
+                &mut *tx,
                 &relation(
                     dependency.depends_on_node_id,
                     dependency.node_id,
@@ -585,6 +540,7 @@ impl<'a> CourseService<'a> {
         node_id: Uuid,
         handle: Option<&JobHandle>,
     ) -> Result<PreparedLesson, AppError> {
+        super::node_agent::ensure(self.state, node_id).await?;
         let node = course_repo::get_node(&self.state.pool, node_id).await?;
         let knowledge = KnowledgeService::new(self.state);
         let evidence = match knowledge.evidence_for_node(&node, 12).await {
@@ -607,10 +563,10 @@ impl<'a> CourseService<'a> {
             .as_deref()
             .and_then(|value| parse_json::<Lesson>(value).ok());
 
-        // Try the model only when there is something to ground it in.
-        if !evidence.is_empty() {
+        // Provider availability, not evidence presence, determines AI use.
+        {
             match self.ai_lesson(&node, &evidence, mastery, handle).await {
-                Ok(lesson) => {
+                Ok((lesson, origin)) => {
                     return Ok(PreparedLesson {
                         lesson,
                         citations: citations.clone(),
@@ -618,10 +574,13 @@ impl<'a> CourseService<'a> {
                         mastery,
                         steps,
                         questions,
-                        generated_by: "ai".to_owned(),
+                        generated_by: origin,
                     });
                 }
                 Err(error) => {
+                    if std::env::var("ORBIT_REQUIRE_AI").as_deref() == Ok("1") {
+                        return Err(error);
+                    }
                     tracing::warn!(%error, node = %node.id, "AI lesson generation failed; using the template lesson");
                 }
             }
@@ -638,7 +597,9 @@ impl<'a> CourseService<'a> {
             mastery,
             steps,
             questions,
-            generated_by: node.generated_by.clone(),
+            generated_by: if cached_origin(&node) != "deterministic" && node.lesson_cache_json.is_some() {
+                cached_origin(&node)
+            } else { "deterministic".to_owned() },
         })
     }
 
@@ -680,7 +641,7 @@ impl<'a> CourseService<'a> {
         evidence: &[crate::knowledge::retrieval::RetrievedChunk],
         mastery: f64,
         handle: Option<&JobHandle>,
-    ) -> Result<Lesson, AppError> {
+    ) -> Result<(Lesson, String), AppError> {
         let source_hash = source_hash(
             &evidence
                 .iter()
@@ -693,8 +654,9 @@ impl<'a> CourseService<'a> {
                 .as_deref()
                 .and_then(|value| parse_json::<Lesson>(value).ok())
             {
-                if !cached.citations.is_empty() {
-                    return Ok(cached);
+                if cached_origin(node) != "deterministic"
+                {
+                    return Ok((cached, cached_origin(node)));
                 }
             }
         }
@@ -704,6 +666,8 @@ impl<'a> CourseService<'a> {
         let misconceptions = previous_misconceptions_for_node(&self.state.pool, node.id).await?;
         let snippets = KnowledgeService::evidence_snippets(evidence);
         let (provider_config, chat_provider) = self.state.providers.default_chat_provider().await?;
+        crate::ai::provenance::require_real(&provider_config)?;
+        let origin = crate::ai::provenance::generation_label(&provider_config, !evidence.is_empty());
         let messages = crate::ai::prompts::lesson_messages(
             &node.title,
             &node.objective,
@@ -722,14 +686,12 @@ impl<'a> CourseService<'a> {
         crate::ai::schemas::validate_lesson_citations(&lesson, &known)?;
         let lesson_json = serde_json::to_string(&lesson)
             .map_err(|error| AppError::Internal(error.to_string()))?;
-        course_repo::update_node_lesson_cache(
-            &self.state.pool,
-            node.id,
-            &lesson_json,
-            &source_hash,
-        )
-        .await?;
-        Ok(lesson)
+        let mut metadata: serde_json::Value = serde_json::from_str(&node.metadata_json).unwrap_or_default();
+        metadata["lessonOrigin"] = json!(origin);
+        sqlx::query("UPDATE course_nodes SET lesson_cache_json = ?, lesson_cache_hash = ?, metadata_json = ? WHERE id = ?")
+            .bind(&lesson_json).bind(&source_hash).bind(metadata.to_string()).bind(node.id)
+            .execute(&self.state.pool).await?;
+        Ok((lesson, origin))
     }
 
     fn template_lesson(&self, node: &CourseNode) -> Result<Lesson, AppError> {
@@ -750,11 +712,14 @@ impl<'a> CourseService<'a> {
 
     /// Mark a node complete, unlock the next one and move "从这里继续".
     pub async fn complete_node(&self, node_id: Uuid) -> Result<Course, AppError> {
-        let node = course_repo::get_node(&self.state.pool, node_id).await?;
-        course_repo::update_node_status(&self.state.pool, node_id, CourseNodeStatus::Completed)
-            .await?;
+        let mut tx = self.state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let node = course_repo::get_node_tx(&mut *tx, node_id).await?;
+        if node.status == CourseNodeStatus::Completed {
+            return course_repo::get_course_tx(&mut tx, node.course_id).await;
+        }
+        course_repo::update_node_status_tx(&mut *tx, node_id, CourseNodeStatus::Completed).await?;
 
-        let nodes = course_repo::list_nodes(&self.state.pool, node.course_id).await?;
+        let nodes = course_repo::list_nodes_tx(&mut *tx, node.course_id).await?;
         let next = nodes
             .iter()
             .find(|candidate| {
@@ -764,22 +729,18 @@ impl<'a> CourseService<'a> {
             .cloned();
         if let Some(next) = &next {
             if next.status == CourseNodeStatus::Locked {
-                course_repo::update_node_status(
-                    &self.state.pool,
-                    next.id,
-                    CourseNodeStatus::Available,
-                )
-                .await?;
+                course_repo::update_node_status_tx(&mut *tx, next.id, CourseNodeStatus::Available)
+                    .await?;
             }
         }
-        course_repo::set_current_node(
-            &self.state.pool,
+        course_repo::set_current_node_tx(
+            &mut *tx,
             node.course_id,
             next.as_ref().map(|node| node.id),
         )
         .await?;
-        loop_repo::insert_adaptation(
-            &self.state.pool,
+        loop_repo::insert_adaptation_tx(
+            &mut *tx,
             &AdaptationEvent::new(
                 node.course_id,
                 Some(node.id),
@@ -789,7 +750,9 @@ impl<'a> CourseService<'a> {
             ),
         )
         .await?;
-        course_repo::get_course(&self.state.pool, node.course_id).await
+        let course = course_repo::get_course_tx(&mut *tx, node.course_id).await?;
+        tx.commit().await?;
+        Ok(course)
     }
 
     /// Insert a targeted practice node directly after `after_node_id`.
@@ -804,11 +767,50 @@ impl<'a> CourseService<'a> {
         reason: &str,
         point_id: Option<Uuid>,
     ) -> Result<CourseNode, AppError> {
-        let course = course_repo::get_course(&self.state.pool, course_id).await?;
-        let after = course_repo::get_node(&self.state.pool, after_node_id).await?;
+        let mut tx = self.state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let node = self
+            .insert_review_node_tx(
+                &mut tx,
+                course_id,
+                after_node_id,
+                title,
+                objective,
+                reason,
+                point_id,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(node)
+    }
+
+    pub async fn insert_review_node_tx(
+        &self,
+        tx: &mut sqlx::SqliteConnection,
+        course_id: Uuid,
+        after_node_id: Uuid,
+        title: &str,
+        objective: &str,
+        reason: &str,
+        point_id: Option<Uuid>,
+    ) -> Result<CourseNode, AppError> {
+        let identity = format!(
+            "{course_id}:{after_node_id}:{}",
+            point_id.map(|id| id.to_string()).unwrap_or_default()
+        );
+        if let Some(id) =
+            sqlx::query_scalar::<_, Uuid>("SELECT node_id FROM adaptation_keys WHERE identity = ?")
+                .bind(&identity)
+                .fetch_optional(&mut *tx)
+                .await?
+        {
+            return course_repo::get_node_tx(&mut *tx, id).await;
+        }
+
+        let course = course_repo::get_course_tx(&mut *tx, course_id).await?;
+        let after = course_repo::get_node_tx(&mut *tx, after_node_id).await?;
         let now = utc_now();
 
-        course_repo::shift_order_hints(&self.state.pool, course_id, after.order_hint + 1).await?;
+        course_repo::shift_order_hints_tx(&mut *tx, course_id, after.order_hint + 1).await?;
 
         let node_id = Uuid::new_v4();
         let point_id = point_id.unwrap_or_else(Uuid::new_v4);
@@ -840,12 +842,12 @@ impl<'a> CourseService<'a> {
             updated_at: now,
         };
 
-        course_repo::insert_node_row(&self.state.pool, &node).await?;
+        course_repo::insert_node(&mut *tx, &node).await?;
 
         // The review node revises the same knowledge point as the node it follows.
-        let point = loop_repo::points_for_node(&self.state.pool, after_node_id).await?;
+        let point = loop_repo::points_for_node_tx(&mut *tx, after_node_id).await?;
         if let Some(point) = point.first() {
-            loop_repo::link_node_points(&self.state.pool, node_id, &[point.id]).await?;
+            loop_repo::link_node_points_tx(&mut *tx, node_id, &[point.id]).await?;
         }
 
         let steps =
@@ -857,7 +859,7 @@ impl<'a> CourseService<'a> {
                 LessonStep::new(node_id, ordinal as i64, step_title, detail, kind, duration)
             })
             .collect();
-        loop_repo::replace_lesson_steps(&self.state.pool, node_id, &lesson_steps).await?;
+        loop_repo::replace_lesson_steps_tx(&mut *tx, node_id, &lesson_steps).await?;
 
         let questions: Vec<QuizQuestion> =
             curriculum::plan_quiz(&node.title, &node.objective, &[title.to_owned()])
@@ -879,7 +881,7 @@ impl<'a> CourseService<'a> {
                     created_at: now,
                 })
                 .collect();
-        loop_repo::replace_quiz_questions(&self.state.pool, node_id, &questions).await?;
+        loop_repo::replace_quiz_questions_tx(&mut *tx, node_id, &questions).await?;
 
         let node_object = KnowledgeObject {
             id: node_id,
@@ -890,15 +892,15 @@ impl<'a> CourseService<'a> {
             created_at: node.created_at,
             updated_at: node.updated_at,
         };
-        knowledge_repo::upsert_object(&self.state.pool, &node_object).await?;
-        knowledge_repo::insert_relation(
-            &self.state.pool,
+        knowledge_repo::upsert_object_tx(&mut *tx, &node_object).await?;
+        knowledge_repo::insert_relation_tx(
+            &mut *tx,
             &relation(course.id, node_id, RelationType::Contains, 1.0)?,
         )
         .await?;
 
-        loop_repo::insert_adaptation(
-            &self.state.pool,
+        loop_repo::insert_adaptation_tx(
+            &mut *tx,
             &AdaptationEvent::new(
                 course_id,
                 Some(after_node_id),
@@ -909,6 +911,11 @@ impl<'a> CourseService<'a> {
         )
         .await?;
 
+        sqlx::query("INSERT INTO adaptation_keys (identity, node_id) VALUES (?, ?)")
+            .bind(&identity)
+            .bind(node.id)
+            .execute(&mut *tx)
+            .await?;
         Ok(node)
     }
 }
@@ -980,4 +987,10 @@ pub async fn previous_misconceptions_for_node(
     }
     output.truncate(10);
     Ok(output)
+}
+
+fn cached_origin(node: &CourseNode) -> String {
+    serde_json::from_str::<serde_json::Value>(&node.metadata_json).ok()
+        .and_then(|v| v.get("lessonOrigin").and_then(|s| s.as_str()).map(str::to_owned))
+        .unwrap_or_else(|| "deterministic".to_owned())
 }

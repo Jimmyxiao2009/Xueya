@@ -552,7 +552,9 @@ async fn files_presign_ownership_dedup_and_quota() {
     let access_a = session_a["access_token"].as_str().unwrap();
     let access_b = session_b["access_token"].as_str().unwrap();
 
-    let sha = "a".repeat(64);
+    use sha2::{Digest, Sha256};
+    let data = vec![b'a'; 123];
+    let sha = hex::encode(Sha256::digest(&data));
     let upload = client
         .post(format!("{base}/api/v1/files/presign-upload"))
         .bearer_auth(access_a)
@@ -568,6 +570,21 @@ async fn files_presign_ownership_dedup_and_quota() {
         .as_str()
         .unwrap()
         .contains("/objects/"));
+
+    let mut put = client.put(upload_body["upload_url"].as_str().unwrap());
+    for (key, value) in upload_body["headers"].as_object().unwrap() {
+        put = put.header(key, value.as_str().unwrap());
+    }
+    assert!(put.body(data).send().await.unwrap().status().is_success());
+    assert!(client
+        .post(format!("{base}/api/v1/files/{file_id}/complete"))
+        .bearer_auth(access_a)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
 
     let dedup = client
         .post(format!("{base}/api/v1/files/presign-upload"))

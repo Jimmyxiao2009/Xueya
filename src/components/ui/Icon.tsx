@@ -4,7 +4,7 @@ import { iconPaths, type IconName } from "@/lib/icons";
 export type { IconName };
 
 /**
- * Renders an Orbit icon exactly like the prototype's `I()` helper:
+ * Renders an 学涯 icon exactly like the prototype's `I()` helper:
  * `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">...</svg>`.
  * The `.icon` rule owns stroke width, caps and `currentColor`.
  */

@@ -24,7 +24,7 @@ const STATUS_COPY: Record<string, string> = {
 
 /**
  * The source library. Everything a route can cite lives here, so this is where
- * a learner sees what Orbit actually knows and can drop material that is wrong
+ * a learner sees what 学涯 actually knows and can drop material that is wrong
  * or out of date.
  */
 export function SourcesScreen({ onBack }: SourcesScreenProps) {
@@ -51,7 +51,7 @@ export function SourcesScreen({ onBack }: SourcesScreenProps) {
         </span>
       </header>
 
-      <main className="create-page scroll-pane">
+      <main className="create-page scroll-pane sources-surface">
         <div className="eyebrow">YOUR OWN MATERIAL</div>
         <h1 className="page-title">资料库</h1>
         <p className="subtext">

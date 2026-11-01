@@ -47,13 +47,20 @@ pub async fn delete_device(
     user_id: Uuid,
     device_id: Uuid,
 ) -> Result<(), ApiError> {
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND device_id = $2")
+        .bind(user_id)
+        .bind(device_id)
+        .execute(&mut *tx)
+        .await?;
     let result = sqlx::query("DELETE FROM devices WHERE id = $1 AND user_id = $2")
         .bind(device_id)
         .bind(user_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
     if result.rows_affected() == 0 {
         return Err(ApiError::not_found("device_not_found", "device not found"));
     }
+    tx.commit().await?;
     Ok(())
 }

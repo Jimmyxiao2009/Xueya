@@ -4,6 +4,14 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 pub async fn upsert_object(pool: &SqlitePool, object: &KnowledgeObject) -> Result<(), AppError> {
+    let mut conn = pool.acquire().await?;
+    upsert_object_tx(&mut conn, object).await
+}
+
+pub async fn upsert_object_tx(
+    conn: &mut sqlx::SqliteConnection,
+    object: &KnowledgeObject,
+) -> Result<(), AppError> {
     sqlx::query(
         r#"
         INSERT INTO knowledge_objects
@@ -24,13 +32,21 @@ pub async fn upsert_object(pool: &SqlitePool, object: &KnowledgeObject) -> Resul
     .bind(&object.metadata_json)
     .bind(object.created_at.to_rfc3339())
     .bind(object.updated_at.to_rfc3339())
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
 
 pub async fn insert_relation(
     pool: &SqlitePool,
+    relation: &KnowledgeRelation,
+) -> Result<(), AppError> {
+    let mut conn = pool.acquire().await?;
+    insert_relation_tx(&mut conn, relation).await
+}
+
+pub async fn insert_relation_tx(
+    conn: &mut sqlx::SqliteConnection,
     relation: &KnowledgeRelation,
 ) -> Result<(), AppError> {
     sqlx::query(
@@ -50,7 +66,7 @@ pub async fn insert_relation(
     .bind(relation.weight)
     .bind(&relation.metadata_json)
     .bind(relation.created_at.to_rfc3339())
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }

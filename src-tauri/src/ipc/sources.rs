@@ -3,20 +3,20 @@ use super::dto::{
 };
 use crate::domain::SourceKind;
 use crate::error::AppError;
+use crate::ipc::State;
 use crate::services::ingestion_service::{IngestInput, IngestionService};
 use crate::services::source_service;
 use crate::state::AppState;
 use base64::Engine as _;
-use tauri::State;
 use uuid::Uuid;
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn source_list(state: State<'_, AppState>) -> Result<Vec<SourceDto>, AppError> {
     let sources = source_service::list_sources(&state.pool).await?;
     Ok(sources.iter().map(SourceDto::from).collect())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn source_summarize(
     state: State<'_, AppState>,
     id: Uuid,
@@ -30,7 +30,7 @@ pub async fn source_summarize(
     })
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn source_import_bytes(
     state: State<'_, AppState>,
     input: ImportBytesInput,
@@ -59,7 +59,7 @@ pub async fn source_import_bytes(
     Ok(JobDto::from(&job))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn source_import_files(
     state: State<'_, AppState>,
     input: ImportFilesInput,
@@ -81,7 +81,15 @@ pub async fn source_import_files(
             .as_ref()
             .and_then(|titles| titles.get(index))
             .cloned();
-        let bytes = tokio::fs::read(&path).await?;
+        use tokio::io::AsyncReadExt;
+        let file = tokio::fs::File::open(&path).await?;
+        let mut bytes = Vec::new();
+        file.take(50 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .await?;
+        if bytes.len() > 50 * 1024 * 1024 {
+            return Err(AppError::InvalidInput("file exceeds 50 MiB limit".into()));
+        }
         let state = state.inner().clone();
         let ingest_input = IngestInput {
             filename,
@@ -105,7 +113,7 @@ pub async fn source_import_files(
     Ok(jobs)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn source_import_url(
     state: State<'_, AppState>,
     input: ImportUrlInput,
@@ -138,12 +146,12 @@ async fn record_source_result(
     .await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn source_delete(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
     source_service::delete_source(state.inner(), id).await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn source_reindex(state: State<'_, AppState>, id: Uuid) -> Result<JobDto, AppError> {
     source_service::get_source(&state.pool, id).await?;
     let state = state.inner().clone();

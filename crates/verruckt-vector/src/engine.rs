@@ -102,6 +102,8 @@ struct Inner {
     /// skipped: after truncation the next op rewrites the same seq.
     next_seq: AtomicU64,
     closed: AtomicBool,
+    sync_wal_per_op: bool,
+    wal_auto_checkpoint_bytes: u64,
 }
 
 impl Inner {
@@ -201,6 +203,8 @@ impl VectorIndex {
             mmap: false,
             next_seq: AtomicU64::new(1),
             closed: AtomicBool::new(false),
+            sync_wal_per_op: false,
+            wal_auto_checkpoint_bytes: config.persistence.wal_auto_checkpoint_bytes,
         };
         let mut inner = inner;
         // Persist generation 0 immediately so a freshly created index is a
@@ -216,6 +220,11 @@ impl VectorIndex {
     /// Open an existing index: load the checkpointed generation, verify all
     /// segment checksums, then replay the WAL on top.
     pub fn open(path: &Path) -> Result<VectorIndex> {
+        Self::open_with(path, &EngineOptions::default())
+    }
+
+    /// Open with runtime durability, checkpoint and mmap options.
+    pub fn open_with(path: &Path, options: &EngineOptions) -> Result<VectorIndex> {
         let manifest_bytes =
             std::fs::read(manifest_path(path)).map_err(|_| VectorError::IndexNotFound {
                 path: path.display().to_string(),
@@ -224,7 +233,10 @@ impl VectorIndex {
         manifest.verify_checksums(path)?;
 
         let config = config_from_manifest(&manifest);
-        let use_mmap = EngineOptions::default().use_mmap;
+        let use_mmap = options.use_mmap;
+        let wal_auto_checkpoint_bytes = options
+            .wal_auto_checkpoint_bytes
+            .unwrap_or(config.persistence.wal_auto_checkpoint_bytes);
         let (mut rows, mut graph) = load_segments(path, &manifest, use_mmap)?;
 
         // Replay the WAL. A torn tail is truncated; mid-log damage is an error.
@@ -274,30 +286,11 @@ impl VectorIndex {
                 mmap: use_mmap,
                 next_seq: AtomicU64::new(next_seq),
                 closed: AtomicBool::new(false),
+                sync_wal_per_op: options.sync_wal_per_op,
+                wal_auto_checkpoint_bytes,
             }),
             write_lock: Mutex::new(()),
         })
-    }
-
-    /// Open with explicit engine options.
-    pub fn open_with(path: &Path, options: &EngineOptions) -> Result<VectorIndex> {
-        // The mmap decision affects only how segments are loaded; the plain
-        // open path already honours the default (mmap on). For non-default
-        // options fall back to a heap load.
-        let index = Self::open(path)?;
-        if !options.use_mmap {
-            // Reload without mmap: drop the mapping by rewriting the store.
-            let mut inner = index.inner.write();
-            let dim = inner.dim();
-            let bytes_len = inner.rows.vectors.rows(dim);
-            let mut heap = Vec::with_capacity(bytes_len * dim);
-            for row in 0..bytes_len {
-                heap.extend_from_slice(inner.rows.vectors.row(row, dim));
-            }
-            inner.rows.vectors = VectorData::Heap { data: heap };
-            inner.mmap = false;
-        }
-        Ok(index)
     }
 
     /// Insert one vector (upsert: an existing live row with the same id is
@@ -319,8 +312,8 @@ impl VectorIndex {
             return Err(VectorError::IndexClosed);
         }
         let dim = inner.dim();
-        let sync = false; // flush()/checkpoint fsync
-        let threshold = inner.config.persistence.wal_auto_checkpoint_bytes;
+        let sync = inner.sync_wal_per_op;
+        let threshold = inner.wal_auto_checkpoint_bytes;
 
         let mut pending: Vec<(VectorId, Vec<f32>, Metadata)> = Vec::new();
         for (id, vector, metadata) in batch {
@@ -363,12 +356,14 @@ impl VectorIndex {
             return Ok(());
         }
         let seq = inner.next_seq.fetch_add(1, Ordering::AcqRel);
-        inner.wal.append(&WalRecord::Delete { seq, id }, false)?;
+        let sync = inner.sync_wal_per_op;
+        inner.wal.append(&WalRecord::Delete { seq, id }, sync)?;
         if let Some(&row) = inner.rows.idmap.get(&id) {
             inner.rows.tombstone(row);
         }
         inner.max_seq = seq.max(inner.max_seq);
-        Ok(())
+        let threshold = inner.wal_auto_checkpoint_bytes;
+        inner.maybe_auto_checkpoint(threshold)
     }
 
     /// Search for the top-`k` nearest vectors.

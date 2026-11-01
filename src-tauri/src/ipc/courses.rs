@@ -4,13 +4,13 @@ use super::dto::{
 };
 use crate::db::repo::{courses as course_repo, jobs as job_repo, learning_loop as loop_repo};
 use crate::error::AppError;
+use crate::ipc::State;
 use crate::services::course_service::{CourseService, RouteRequest};
 use crate::state::AppState;
 use serde_json::json;
-use tauri::State;
 use uuid::Uuid;
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn course_list(state: State<'_, AppState>) -> Result<Vec<CourseDto>, AppError> {
     let courses = CourseService::new(&state).list_courses().await?;
     let mut output = Vec::with_capacity(courses.len());
@@ -21,7 +21,7 @@ pub async fn course_list(state: State<'_, AppState>) -> Result<Vec<CourseDto>, A
     Ok(output)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn course_get(state: State<'_, AppState>, id: Uuid) -> Result<CourseDetailDto, AppError> {
     let (course, nodes, dependencies) = CourseService::new(&state).get_course_bundle(id).await?;
     let progress = course_repo::progress_for_course(&state.pool, id).await?;
@@ -36,7 +36,7 @@ pub async fn course_get(state: State<'_, AppState>, id: Uuid) -> Result<CourseDe
 ///
 /// Progress phases are published through `job://progress`; the created route id
 /// lands in the job's `resultJson` so the UI can open it when the job finishes.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn course_create(
     state: State<'_, AppState>,
     input: CourseCreateInput,
@@ -69,7 +69,7 @@ pub async fn course_create(
     Ok(JobDto::from(&job))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn course_regenerate(state: State<'_, AppState>, id: Uuid) -> Result<JobDto, AppError> {
     course_repo::get_course(&state.pool, id).await?;
     let state = state.inner().clone();
@@ -93,12 +93,12 @@ pub async fn course_regenerate(state: State<'_, AppState>, id: Uuid) -> Result<J
     Ok(JobDto::from(&job))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn course_delete(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
     CourseService::new(&state).delete_course(id).await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn course_node_get(
     state: State<'_, AppState>,
     node_id: Uuid,
@@ -107,7 +107,7 @@ pub async fn course_node_get(
     Ok(CourseNodeDto::from(&node))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn course_node_prepare(
     state: State<'_, AppState>,
     node_id: Uuid,
@@ -122,7 +122,7 @@ pub async fn course_node_prepare(
 /// Close a node: mark it complete, unlock the next one and record the
 /// adaptation event. Returns the refreshed course so the roadmap can re-render
 /// without a second round-trip.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn course_node_complete(
     state: State<'_, AppState>,
     node_id: Uuid,
@@ -138,7 +138,7 @@ pub async fn course_node_complete(
     })
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn course_learner_states(
     state: State<'_, AppState>,
     id: Uuid,
@@ -169,7 +169,7 @@ pub async fn course_learner_states(
         .collect())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn course_adaptations(
     state: State<'_, AppState>,
     id: Uuid,

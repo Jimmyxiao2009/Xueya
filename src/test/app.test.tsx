@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { StrictMode } from "react";
+import { api } from "@/api";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "@/App";
 import { backend } from "./fakeBackend";
@@ -93,7 +95,32 @@ beforeEach(() => {
   backend.seed("线性代数", "algebra");
 });
 
-describe("Orbit shell", () => {
+describe("学涯 shell", () => {
+  it("opens an empty workspace and lets a first-time user create a route", async () => {
+    backend.routes.length = 0;
+    mountApp();
+    await screen.findByRole("heading", { name: "从第一条学习路线开始" });
+    expect(screen.queryByText("正在打开学习空间")).toBeNull();
+    await clickAsync(screen.getByRole("button", { name: "创建学习路线" }));
+    await waitFor(() => expect(document.querySelector(".route-setup")).toBeTruthy());
+  });
+
+  it("shows a recoverable error instead of an endless spinner when route loading fails", async () => {
+    const request = vi.spyOn(api, "routeList").mockRejectedValue({ code: "IO_ERROR", message: "读取失败" });
+    try {
+      mountApp();
+      expect(await screen.findByRole("alert")).toHaveTextContent("读取失败");
+      expect(screen.queryByText("正在打开学习空间")).toBeNull();
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it("finishes bootstrap under StrictMode", async () => {
+    render(<StrictMode><App /></StrictMode>);
+    await boot();
+  });
+
   it("boots into the first route and lists its roadmap nodes", async () => {
     mountApp();
     await boot();
@@ -110,6 +137,7 @@ describe("Orbit shell", () => {
     swipe(zone, 320, 90);
 
     await waitFor(() => expect(subjectName()).toBe("线性代数"));
+    expect((document.querySelector(".home-page") as HTMLElement).style.transform).toBe("");
     // The swipe marked the incoming roadmap as settled, so entrance animations
     // do not replay on top of the slide.
     expect(document.querySelector(".home-page")?.className).toContain("swipe-settled");
@@ -157,15 +185,41 @@ describe("lesson", () => {
 });
 
 describe("learning loop", () => {
-  async function enterLearning() {
+  async function enterLearning(openAssessment = true) {
     await boot();
     await clickAsync(document.querySelector('.stop[data-node-id="route-geometry-node-1"] .node-hit'));
     await waitFor(() => expect(document.querySelectorAll(".todo").length).toBe(4));
     await clickAsync(document.querySelector(".lesson-dock .primary"));
-    await waitFor(() => expect(document.querySelector(".quiz-card")).toBeTruthy(), {
+    // The agent must open the conversation before the learner does anything.
+    await waitFor(() => expect(document.querySelector(".message.assistant")).toBeTruthy(), {
       timeout: 3000,
     });
+    if (openAssessment) {
+      await clickAsync(screen.getByRole("button", { name: /阶段检查/ }));
+      await waitFor(() => expect(document.querySelector(".quiz-card")).toBeTruthy(), {
+        timeout: 3000,
+      });
+    }
   }
+  it("starts with an agent-authored opening and keeps the conversation primary", async () => {
+    mountApp();
+    await enterLearning(false);
+
+    expect(backend.calls).toContain("learning_start");
+    expect(document.body.textContent).toContain("先不急着记定义");
+    expect(document.querySelector(".quiz-card")).toBeNull();
+
+    const input = document.querySelector("#chat-input") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "我觉得是因为方向相同" } });
+    });
+    await clickAsync(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(backend.calls).toContain("tutor_send"));
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("收到。我会根据你的回答继续提问。"),
+    );
+  });
+
 
   it("starts a session, grades a single choice answer and lights up the plan", async () => {
     mountApp();
@@ -281,7 +335,7 @@ describe("learning loop", () => {
     await waitFor(() => expect(document.querySelector(".feedback")?.textContent).toContain("作答已提交"));
 
     // Objective answers are graded in Rust; free text has to be asked for.
-    await clickAsync(screen.getByText("让 Orbit 评阅这段作答"));
+    await clickAsync(screen.getByText("让 学涯 评阅这段作答"));
     await waitFor(() => expect(backend.calls).toContain("learning_respond"));
     await waitFor(() =>
       expect(document.querySelector(".feedback")?.textContent).toContain("已评阅 · 正确度 62%"),
@@ -303,14 +357,16 @@ describe("route creation", () => {
     await waitFor(() => expect(document.querySelector(".roadmap-layer")).toBeTruthy());
 
     await clickAsync(document.querySelector(".add-unknown"));
-    await waitFor(() => expect(document.querySelector("#topic")).toBeTruthy());
+    await waitFor(() => expect(document.querySelector("#setup-topic")).toBeTruthy());
 
-    const topic = document.querySelector("#topic") as HTMLInputElement;
+    const topic = document.querySelector("#setup-topic") as HTMLInputElement;
     await act(async () => {
       fireEvent.change(topic, { target: { value: "伽罗瓦理论" } });
     });
 
-    await clickAsync(document.querySelector(".create-dock .primary"));
+    for (let step = 0; step < 3; step++) {
+      await clickAsync(document.querySelector(".setup-actions .primary"));
+    }
 
     await waitFor(() => expect(backend.calls).toContain("course_create"), { timeout: 3000 });
     await waitFor(() => expect(document.querySelector(".generation-page")).toBeTruthy());
@@ -406,14 +462,20 @@ describe("management layer", () => {
     await openLayer();
 
     await clickAsync(layerButton("探索新的未知"));
-    await waitFor(() => expect(document.querySelector("#topic")).toBeTruthy());
+    await waitFor(() => expect(document.querySelector("#setup-topic")).toBeTruthy());
     await act(async () => {
-      fireEvent.change(document.querySelector("#topic") as HTMLInputElement, {
+      fireEvent.change(document.querySelector("#setup-topic") as HTMLInputElement, {
         target: { value: "伽罗瓦理论" },
       });
     });
 
-    await clickAsync(document.querySelector(".create-dock .primary"));
+    for (let step = 0; step < 2; step++) {
+      await clickAsync(document.querySelector(".setup-actions .primary"));
+    }
+
+    await clickAsync(screen.getByRole("button", { name: "帮我找资料" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "生成我的路线" })).toBeEnabled(), { timeout: 3000 });
+    await clickAsync(screen.getByRole("button", { name: "生成我的路线" }));
 
     await waitFor(() => expect(backend.calls).toContain("search_web"), { timeout: 3000 });
     await waitFor(() => expect(backend.calls).toContain("course_create"), {

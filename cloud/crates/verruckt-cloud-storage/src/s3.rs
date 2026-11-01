@@ -98,6 +98,51 @@ impl S3ObjectStorage {
         self.presign(Method::GET, key, None)
     }
 
+    pub fn presign_verified_put(
+        &self,
+        key: &str,
+        content_type: &str,
+        size: i64,
+        sha256: &str,
+    ) -> Result<PresignedRequest, StorageError> {
+        let mut headers = BTreeMap::new();
+        headers.insert("content-type".into(), content_type.into());
+        headers.insert("content-length".into(), size.to_string());
+        headers.insert("x-amz-content-sha256".into(), sha256.to_ascii_lowercase());
+        self.presign_headers(Method::PUT, key, headers, &sha256.to_ascii_lowercase())
+    }
+
+    /// Verify storage, with a cumulative budget, before publishing an object.
+    pub async fn verify_object(
+        &self,
+        key: &str,
+        size: i64,
+        sha256: &str,
+    ) -> Result<bool, StorageError> {
+        let mut response = self
+            .client
+            .get(self.presign_get(key)?.url)
+            .send()
+            .await
+            .map_err(|_| StorageError::Request)?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if !response.status().is_success() {
+            return Err(StorageError::Request);
+        }
+        let mut count = 0u64;
+        let mut hash = Sha256::new();
+        while let Some(chunk) = response.chunk().await.map_err(|_| StorageError::Request)? {
+            count = count.saturating_add(chunk.len() as u64);
+            if count > size as u64 {
+                return Ok(false);
+            }
+            hash.update(&chunk);
+        }
+        Ok(count == size as u64 && hex::encode(hash.finalize()).eq_ignore_ascii_case(sha256))
+    }
+
     pub async fn ensure_bucket(&self) -> Result<(), StorageError> {
         let (uri, host, scheme) = self.build_bucket_location()?;
         let now = Utc::now();
@@ -197,6 +242,20 @@ impl S3ObjectStorage {
         key: &str,
         content_type: Option<&str>,
     ) -> Result<PresignedRequest, StorageError> {
+        let mut headers = BTreeMap::new();
+        if let Some(value) = content_type {
+            headers.insert("content-type".into(), value.into());
+        }
+        self.presign_headers(method, key, headers, UNSIGNED_PAYLOAD)
+    }
+
+    fn presign_headers(
+        &self,
+        method: Method,
+        key: &str,
+        mut headers: BTreeMap<String, String>,
+        payload_hash: &str,
+    ) -> Result<PresignedRequest, StorageError> {
         let (uri, host, scheme) = self.build_location(key)?;
         let now = Utc::now();
         let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
@@ -207,15 +266,12 @@ impl S3ObjectStorage {
         );
         let ttl = self.config.presign_ttl_secs.max(60);
 
-        let signed_headers = if content_type.is_some() {
-            "content-type;host"
-        } else {
-            "host"
-        };
-        let canonical_headers = match content_type {
-            Some(value) => format!("content-type:{value}\nhost:{host}\n"),
-            None => format!("host:{host}\n"),
-        };
+        headers.insert("host".into(), host.clone());
+        let signed_headers = headers.keys().cloned().collect::<Vec<_>>().join(";");
+        let canonical_headers = headers
+            .iter()
+            .map(|(key, value)| format!("{key}:{value}\n"))
+            .collect::<String>();
 
         let mut query_params: Vec<(String, String)> = vec![
             ("X-Amz-Algorithm".into(), "AWS4-HMAC-SHA256".into()),
@@ -225,11 +281,11 @@ impl S3ObjectStorage {
             ),
             ("X-Amz-Date".into(), amz_date.clone()),
             ("X-Amz-Expires".into(), ttl.to_string()),
-            ("X-Amz-SignedHeaders".into(), signed_headers.into()),
+            ("X-Amz-SignedHeaders".into(), signed_headers.clone()),
         ];
         let canonical_query = canonical_query_string(&query_params);
         let canonical_request = format!(
-            "{method}\n{uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{UNSIGNED_PAYLOAD}"
+            "{method}\n{uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
         );
         let hashed_canonical = sha256_hex(canonical_request.as_bytes());
         let string_to_sign = format!("AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{hashed_canonical}");
@@ -244,9 +300,10 @@ impl S3ObjectStorage {
         let query = canonical_query_string(&query_params);
         let url = format!("{scheme}://{host}{uri}?{query}");
 
-        let mut headers = BTreeMap::new();
-        if let Some(value) = content_type {
-            headers.insert("Content-Type".into(), value.into());
+        headers.remove("host");
+        // Keep the public response shape stable; SigV4 uses lowercase names.
+        if let Some(content_type) = headers.remove("content-type") {
+            headers.insert("Content-Type".into(), content_type);
         }
 
         Ok(PresignedRequest {

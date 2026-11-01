@@ -3,8 +3,8 @@
 //! Backend-only command surface (`vector_backend_info`): local engine stats
 //! for the dev retrieval inspector. No telemetry, no upload.
 
+use crate::ipc::State;
 use serde::Serialize;
-use tauri::State;
 
 use crate::error::AppError;
 use crate::knowledge::vector_index::VectorBackendStats;
@@ -24,7 +24,7 @@ pub struct VectorBackendInfo {
 /// Returns a diagnostics snapshot of the selected vector backend. The
 /// reported backend mirrors the process-wide `VERRUCKT_VECTOR_BACKEND`
 /// selection rather than guessing from the trait object.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn vector_backend_info(
     state: State<'_, AppState>,
 ) -> Result<VectorBackendInfo, AppError> {

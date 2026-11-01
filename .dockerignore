@@ -1,0 +1,12 @@
+node_modules
+**/target
+.git
+.env*
+.orbit-server
+.zcode
+.superdesign
+audit-results
+dist
+reference
+**/*.log
+**/*.sqlite*

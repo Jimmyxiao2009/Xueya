@@ -12,15 +12,18 @@ struct ObjectRow {
     id: Uuid,
     size: i64,
     object_key: String,
+    sha256: String,
+    status: String,
 }
 
 pub async fn presign_upload(
     state: &AppState,
     user_id: Uuid,
-    request: PresignUploadRequest,
+    mut request: PresignUploadRequest,
 ) -> Result<PresignUploadResponse, ApiError> {
     let storage = require_storage(state)?;
     validate_upload_request(state, &request)?;
+    request.sha256.make_ascii_lowercase();
 
     let entitlements = resolve_entitlements(&state.pool, user_id).await?;
     if !entitlements.cloud_sync_enabled() {
@@ -38,9 +41,13 @@ pub async fn presign_upload(
     }
 
     let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
     let existing = sqlx::query_as::<_, ObjectRow>(
         r#"
-        SELECT id, size, object_key
+        SELECT id, size, object_key, sha256, status
         FROM objects
         WHERE user_id = $1 AND sha256 = $2
         "#,
@@ -57,7 +64,22 @@ pub async fn presign_upload(
                 "an object with this sha256 already exists with a different size",
             ));
         }
-        let presigned = storage.presign_put(&existing.object_key, Some(&request.mime))?;
+        let presigned = storage.presign_verified_put(
+            &existing.object_key,
+            &request.mime,
+            request.size,
+            &request.sha256,
+        )?;
+        let verified = existing.status == "active"
+            && storage
+                .verify_object(&existing.object_key, existing.size, &existing.sha256)
+                .await?;
+        if !verified {
+            sqlx::query("UPDATE objects SET status = 'pending' WHERE id = $1")
+                .bind(existing.id)
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await?;
         return Ok(PresignUploadResponse {
             file_id: existing.id,
@@ -66,7 +88,7 @@ pub async fn presign_upload(
             method: presigned.method,
             headers: presigned.headers,
             expires_in: presigned.expires_in,
-            deduplicated: true,
+            deduplicated: verified,
         });
     }
 
@@ -84,7 +106,7 @@ pub async fn presign_upload(
     .fetch_one(&mut *tx)
     .await?;
 
-    if bytes_used + request.size > limit {
+    if request.size > limit.saturating_sub(bytes_used) {
         return Err(ApiError::payment_required(
             "storage_quota_exceeded",
             "cloud storage quota exceeded",
@@ -96,7 +118,7 @@ pub async fn presign_upload(
     sqlx::query(
         r#"
         INSERT INTO objects (id, user_id, sha256, size, mime, filename, object_key, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
         "#,
     )
     .bind(file_id)
@@ -117,7 +139,8 @@ pub async fn presign_upload(
     .execute(&mut *tx)
     .await?;
 
-    let presigned = storage.presign_put(&object_key, Some(&request.mime))?;
+    let presigned =
+        storage.presign_verified_put(&object_key, &request.mime, request.size, &request.sha256)?;
     tx.commit().await?;
 
     Ok(PresignUploadResponse {
@@ -139,9 +162,9 @@ pub async fn presign_download(
     let storage = require_storage(state)?;
     let object = sqlx::query_as::<_, ObjectRow>(
         r#"
-        SELECT id, size, object_key
+        SELECT id, size, object_key, sha256, status
         FROM objects
-        WHERE id = $1 AND user_id = $2
+        WHERE id = $1 AND user_id = $2 AND status = 'active'
         "#,
     )
     .bind(file_id)
@@ -166,22 +189,26 @@ pub async fn delete_file(
     file_id: Uuid,
 ) -> Result<DeleteFileResponse, ApiError> {
     let storage = require_storage(state)?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
     let object = sqlx::query_as::<_, ObjectRow>(
         r#"
-        SELECT id, size, object_key
+        SELECT id, size, object_key, sha256, status
         FROM objects
-        WHERE id = $1 AND user_id = $2
+        WHERE id = $1 AND user_id = $2 FOR UPDATE
         "#,
     )
     .bind(file_id)
     .bind(user_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| ApiError::not_found("file_not_found", "file not found"))?;
 
     storage.delete_object(&object.object_key).await?;
 
-    let mut tx = state.pool.begin().await?;
     sqlx::query("DELETE FROM objects WHERE id = $1 AND user_id = $2")
         .bind(file_id)
         .bind(user_id)
@@ -204,6 +231,33 @@ pub async fn delete_file(
         deleted: true,
         file_id,
     })
+}
+
+pub async fn complete_upload(
+    state: &AppState,
+    user_id: Uuid,
+    file_id: Uuid,
+) -> Result<(), ApiError> {
+    let storage = require_storage(state)?;
+    let mut tx = state.pool.begin().await?;
+    let object = sqlx::query_as::<_, ObjectRow>("SELECT id, size, object_key, sha256, status FROM objects WHERE id = $1 AND user_id = $2 FOR UPDATE")
+        .bind(file_id).bind(user_id).fetch_optional(&mut *tx).await?
+        .ok_or_else(|| ApiError::not_found("file_not_found", "file not found"))?;
+    if !storage
+        .verify_object(&object.object_key, object.size, &object.sha256)
+        .await?
+    {
+        return Err(ApiError::conflict(
+            "upload_incomplete",
+            "uploaded object is missing or does not match its declared size and hash",
+        ));
+    }
+    sqlx::query("UPDATE objects SET status = 'active' WHERE id = $1")
+        .bind(file_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 fn require_storage(state: &AppState) -> Result<&S3ObjectStorage, ApiError> {

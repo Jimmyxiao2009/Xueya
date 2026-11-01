@@ -49,6 +49,12 @@ pub enum VectorBackend {
 
 impl VectorBackend {
     pub fn from_env() -> Self {
+        // Android is a formal target. Keep the SQLite vector backend as the
+        // portable default unless the native engine is explicitly validated on
+        // the device; both paths stay behind the same VectorIndex interface.
+        if cfg!(target_os = "android") {
+            return Self::Sqlite;
+        }
         match std::env::var("VERRUCKT_VECTOR_BACKEND")
             .ok()
             .as_deref()
@@ -82,6 +88,8 @@ pub struct AppState {
     pub paths: AppPaths,
     pub blobs: BlobStore,
     pub files: Arc<CloudFileSyncService>,
+    pub node_agents: Arc<crate::services::node_agent::NodeAgents>,
+    pub ingestion_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -91,7 +99,7 @@ impl AppState {
 
         #[cfg(target_os = "android")]
         let secrets: Arc<dyn SecretStore> = Arc::new(
-            crate::secrets::encrypted_store::EncryptedSecretStore::new(&paths.app_data_dir)?
+            crate::secrets::encrypted_store::EncryptedSecretStore::new(&paths.app_data_dir)?,
         );
 
         Self::new_with_secrets(paths, secrets).await
@@ -123,13 +131,22 @@ impl AppState {
         migrate::run(&pool).await?;
 
         let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(180))
+            .user_agent("Verruckt/0.1")
+            .build()
+            .map_err(|error| AppError::Network(error.to_string()))?;
+        // Account, entitlement and sync calls must fail promptly when the
+        // venue network is down; AI calls keep the longer model timeout above.
+        let cloud_http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
             .user_agent("Verruckt/0.1")
             .build()
             .map_err(|error| AppError::Network(error.to_string()))?;
 
         let cloud = Arc::new(CloudAccountClient::new(
-            http.clone(),
+            cloud_http,
             secrets.clone(),
             pool.clone(),
             crate::cloud::default_cloud_base_url(),
@@ -172,6 +189,8 @@ impl AppState {
         ));
 
         Ok(Self {
+            node_agents: Arc::new(crate::services::node_agent::NodeAgents::default()),
+            ingestion_lock: Arc::new(tokio::sync::Mutex::new(())),
             pool,
             http,
             secrets,

@@ -38,11 +38,19 @@ impl DocumentParser for DocxParser {
         let mut archive = zip::ZipArchive::new(cursor)
             .map_err(|error| AppError::Parser(format!("invalid docx archive: {error}")))?;
         let mut document_xml = String::new();
-        let mut file = archive
+        let file = archive
             .by_name("word/document.xml")
             .map_err(|error| AppError::Parser(format!("docx document.xml missing: {error}")))?;
-        file.read_to_string(&mut document_xml)
+        const MAX_XML: u64 = 16 * 1024 * 1024;
+        if file.size() > MAX_XML {
+            return Err(AppError::Parser("docx XML exceeds size limit".into()));
+        }
+        file.take(MAX_XML + 1)
+            .read_to_string(&mut document_xml)
             .map_err(|error| AppError::Parser(format!("docx document.xml unreadable: {error}")))?;
+        if document_xml.len() as u64 > MAX_XML {
+            return Err(AppError::Parser("docx XML exceeds size limit".into()));
+        }
 
         let paragraph = Regex::new(r"(?is)<w:p(?:\s[^>]*)?>(.*?)</w:p>")
             .map_err(|error| AppError::Internal(error.to_string()))?;

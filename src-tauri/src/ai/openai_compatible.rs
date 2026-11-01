@@ -295,6 +295,9 @@ impl OpenAiCompatibleProvider {
             "messages": request.messages,
             "temperature": request.temperature,
         });
+        if matches!(model.as_str(), "step-3.7-flash" | "verruckt-fast") {
+            body["reasoning_effort"] = json!("low");
+        }
         if let Some(max_tokens) = request.max_tokens {
             body["max_tokens"] = json!(max_tokens);
         }
@@ -431,6 +434,9 @@ impl OpenAiCompatibleProvider {
             "temperature": request.temperature,
             "stream": true,
         });
+        if matches!(model.as_str(), "step-3.7-flash" | "verruckt-fast") {
+            body["reasoning_effort"] = json!("low");
+        }
         if let Some(max_tokens) = request.max_tokens {
             body["max_tokens"] = json!(max_tokens);
         }
@@ -844,6 +850,11 @@ fn sse_stream(response: Response, protocol: ProviderProtocol) -> ChatStream {
             }
             match state.stream.next().await {
                 Some(Ok(chunk)) => {
+                    if chunk.len() > (1024 * 1024usize).saturating_sub(state.buffer.len()) {
+                        return Err(AppError::AiResponseInvalid(
+                            "provider SSE event exceeds 1 MiB".into(),
+                        ));
+                    }
                     state.buffer.extend_from_slice(&chunk);
                 }
                 Some(Err(error)) => return Err(AppError::Network(error.to_string())),

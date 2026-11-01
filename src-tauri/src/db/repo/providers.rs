@@ -23,7 +23,7 @@ pub async fn get_provider(pool: &SqlitePool, id: Uuid) -> Result<ProviderConfig,
 
 pub async fn first_enabled_provider(pool: &SqlitePool) -> Result<Option<ProviderConfig>, AppError> {
     let provider = sqlx::query_as::<_, ProviderConfig>(
-        "SELECT id, display_name, base_url, chat_model, embedding_model, api_key_ref, protocol, enabled, created_at, updated_at FROM providers WHERE enabled = 1 ORDER BY CASE WHEN base_url LIKE 'mock://%' THEN 1 ELSE 0 END, created_at LIMIT 1",
+        "SELECT id, display_name, base_url, chat_model, embedding_model, api_key_ref, protocol, enabled, created_at, updated_at FROM providers WHERE enabled = 1 AND base_url NOT LIKE 'mock://%' ORDER BY created_at LIMIT 1",
     )
     .fetch_optional(pool)
     .await?;

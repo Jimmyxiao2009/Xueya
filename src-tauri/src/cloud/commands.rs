@@ -1,8 +1,9 @@
 use super::models::{CloudAccountState, CloudDeviceDto, CloudMeDto, CloudUsageDto};
 use crate::error::AppError;
+use crate::ipc::State;
+use crate::services::settings_service;
 use crate::state::AppState;
 use serde::Deserialize;
-use tauri::State;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -12,41 +13,47 @@ pub struct CloudCredentialsInput {
     pub password: String,
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cloud_account_state(
     state: State<'_, AppState>,
 ) -> Result<CloudAccountState, AppError> {
     state.cloud.account_state().await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cloud_register(
     state: State<'_, AppState>,
     input: CloudCredentialsInput,
 ) -> Result<CloudAccountState, AppError> {
-    state.cloud.register(input.email, input.password).await
+    let account = state.cloud.register(input.email, input.password).await?;
+    settings_service::reconcile_provider_policy(&state, &account).await?;
+    Ok(account)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cloud_login(
     state: State<'_, AppState>,
     input: CloudCredentialsInput,
 ) -> Result<CloudAccountState, AppError> {
-    state.cloud.login(input.email, input.password).await
+    let account = state.cloud.login(input.email, input.password).await?;
+    settings_service::reconcile_provider_policy(&state, &account).await?;
+    Ok(account)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cloud_logout(state: State<'_, AppState>) -> Result<CloudAccountState, AppError> {
-    state.cloud.logout().await
+    let account = state.cloud.logout().await?;
+    settings_service::reconcile_provider_policy(&state, &account).await?;
+    Ok(account)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cloud_get_me(state: State<'_, AppState>) -> Result<CloudMeDto, AppError> {
     let me = state.cloud.me().await?;
     Ok(me.user.into())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cloud_get_entitlements(
     state: State<'_, AppState>,
 ) -> Result<super::models::CloudEntitlementsDto, AppError> {
@@ -54,7 +61,7 @@ pub async fn cloud_get_entitlements(
     Ok((&entitlements).into())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cloud_list_devices(
     state: State<'_, AppState>,
 ) -> Result<Vec<CloudDeviceDto>, AppError> {
@@ -67,18 +74,18 @@ pub async fn cloud_list_devices(
         .collect())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cloud_remove_device(state: State<'_, AppState>, id: Uuid) -> Result<(), AppError> {
     state.cloud.remove_device(id).await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cloud_get_ai_usage(state: State<'_, AppState>) -> Result<CloudUsageDto, AppError> {
     let usage = state.cloud.ai_usage().await?;
     Ok((&usage).into())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cloud_set_base_url(
     state: State<'_, AppState>,
     url: String,
@@ -86,7 +93,7 @@ pub async fn cloud_set_base_url(
     state.cloud.set_base_url(&url).await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cloud_set_sync_enabled(
     state: State<'_, AppState>,
     enabled: bool,

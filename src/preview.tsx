@@ -9,6 +9,12 @@
 
 import "@/styles/index.css";
 
+// Old preview bookmarks must enter the real app. Fixtures require an explicit
+// development-only opt-in and are never included in the production bundle.
+if (!import.meta.env.DEV || new URLSearchParams(window.location.search).get("fixtures") !== "1") {
+  window.location.replace("/");
+} else {
+
 const NOW = "2026-01-01T00:00:00Z";
 
 const route = {
@@ -36,6 +42,17 @@ const nodes = [
   node("n6", "配极变换", 6, "pending", "lesson", 16),
 ];
 
+const algebraRoute = {
+  ...route, id: "r2", topic: "线性代数", title: "线性代数", kind: "algebra",
+  description: "用向量和变换，理解空间的语言。", currentNodeId: "a2",
+  completedCount: 1, progress: 1 / 6,
+};
+const algebraNodes = ["向量与空间", "线性组合", "向量与线性组合", "线性无关", "第一阶段 · 小试身手", "基与维数"]
+  .map((title, index) => ({
+    ...node(`a${index + 1}`, title, index + 1, index === 0 ? "completed" : index === 1 ? "in_progress" : "pending",
+      index === 2 ? "review" : index === 4 ? "quiz" : "lesson", 15), courseId: "r2",
+  }));
+
 const lesson = {
   title: "交比与调和分割",
   explanation:
@@ -60,21 +77,37 @@ const lesson = {
   hasEvidence: false,
 };
 
-async function fakeInvoke(command: string): Promise<unknown> {
+async function fakeInvoke(command: string, args?: Record<string, unknown>): Promise<unknown> {
+  const selectedNode = [...nodes, ...algebraNodes].find((item) => item.id === (args?.nodeId ?? args?.id));
+  const selectedLesson = selectedNode?.courseId === "r2" ? {
+    ...lesson, title: selectedNode.title,
+    explanation: "线性组合通过缩放和相加已有向量，得到新的向量。改变系数，可以观察这些向量能够到达的空间。",
+    keyPoints: ["系数决定向量的缩放", "向量相加得到线性组合", "所有线性组合构成张成空间"],
+    objectives: ["理解线性组合", "用图像解释张成空间"],
+    steps: [
+      ["向量是可以相加的箭头", "理解向量加法的几何含义"],
+      ["系数如何改变向量", "认识数乘与线性组合"],
+      ["两个向量能到达哪里？", "观察张成空间与共线的关系"],
+      ["把你的想法写出来", "用小测检查理解"],
+    ].map(([title, detail], index) => ({ ...lesson.steps[index], title, detail })),
+    questions: [], diagnosticQuestion: "两个共线向量的线性组合能到达整个平面吗？",
+  } : selectedNode ? { ...lesson, title: selectedNode.title } : lesson;
   switch (command) {
     case "app_bootstrap":
     case "app_get_info":
-      return { version: "0.1.0", dataDir: "", providerCount: 0, sourceCount: 0, courseCount: 1, searchConfigured: false };
-    case "course_list": return [route];
-    case "course_get": return { course: route, nodes, dependencies: [] };
+      return { version: "0.1.0", dataDir: "", providerCount: 0, sourceCount: 0, courseCount: 2, searchConfigured: false };
+    case "course_list": return [route, algebraRoute];
+    case "course_get": return args?.id === "r2"
+      ? { course: algebraRoute, nodes: algebraNodes, dependencies: [] }
+      : { course: route, nodes, dependencies: [] };
     case "course_learner_states": return [];
     case "course_adaptations": return [];
     case "source_list": return [];
-    case "settings_get": return { searchProvider: "", hasBraveApiKey: false, aiMode: "mock" };
+    case "settings_get": return { searchProvider: "", hasBraveApiKey: false, hasTavilyApiKey: false, hasSerperApiKey: false, searxngUrl: "", aiMode: "mock" };
     case "provider_list": return [];
-    case "course_node_prepare": return lesson;
-    case "course_node_get": return nodes[2];
-    case "learning_start": return { sessionId: "sess1", lesson, mastery: 0.4 };
+    case "course_node_prepare": return selectedLesson;
+    case "course_node_get": return selectedNode ?? nodes[2];
+    case "learning_start": return { sessionId: "sess1", lesson: selectedLesson, mastery: 0.4 };
     case "quiz_list": return lesson.questions;
     case "job_list": return [];
     case "cloud_account_state": return { state: "signed_out" };
@@ -127,4 +160,6 @@ if (target && target !== "home") {
       nav.setView("create", 1);
     }
   }
+}
+
 }

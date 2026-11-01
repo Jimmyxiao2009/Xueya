@@ -139,8 +139,56 @@ pub fn parse_json<T: DeserializeOwned>(content: &str) -> Result<T, AppError> {
     } else {
         trimmed
     };
+    if let Ok(value) = serde_json::from_str(without_fence) {
+        return Ok(value);
+    }
+    // Real reasoning models sometimes wrap the object in prose or echo a
+    // reasoning preamble. Recover the outermost JSON object/array instead of
+    // failing the whole teaching turn.
+    if let Some(extracted) = extract_json_object(without_fence) {
+        if let Ok(value) = serde_json::from_str(&extracted) {
+            return Ok(value);
+        }
+    }
     serde_json::from_str(without_fence)
         .map_err(|error| AppError::AiResponseInvalid(format!("invalid JSON: {error}")))
+}
+
+/// Return the first balanced JSON object or array in `content`, ignoring
+/// braces inside JSON strings. Scans bytes but only slices on char boundaries.
+fn extract_json_object(content: &str) -> Option<String> {
+    let bytes = content.as_bytes();
+    let start = bytes.iter().position(|byte| *byte == b'{' || *byte == b'[')?;
+    let open = bytes[start];
+    let close = if open == b'{' { b'}' } else { b']' };
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, byte) in bytes[start..].iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match *byte {
+            b'"' => in_string = true,
+            value if value == open => depth += 1,
+            value if value == close => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let end = start + offset + 1;
+                    return Some(content[start..end].to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 pub fn validate_course_plan(
@@ -179,18 +227,30 @@ pub fn validate_course_plan(
                 node.id
             )));
         }
-        if node.evidence_chunk_ids.is_empty() {
-            return Err(AppError::AiResponseInvalid(format!(
-                "course node {} has no evidence chunks",
-                node.id
-            )));
-        }
-        for chunk_id in &node.evidence_chunk_ids {
-            if !known_chunk_ids.contains(chunk_id) {
+        // With local evidence, every node must cite at least one real chunk.
+        // Without local evidence (topic-only generation), empty citations are
+        // expected — but the model must not invent chunk ids.
+        if known_chunk_ids.is_empty() {
+            if !node.evidence_chunk_ids.is_empty() {
                 return Err(AppError::AiResponseInvalid(format!(
-                    "course node {} references unknown evidence chunk {}",
-                    node.id, chunk_id
+                    "course node {} references evidence chunks but no local evidence was provided",
+                    node.id
                 )));
+            }
+        } else {
+            if node.evidence_chunk_ids.is_empty() {
+                return Err(AppError::AiResponseInvalid(format!(
+                    "course node {} has no evidence chunks",
+                    node.id
+                )));
+            }
+            for chunk_id in &node.evidence_chunk_ids {
+                if !known_chunk_ids.contains(chunk_id) {
+                    return Err(AppError::AiResponseInvalid(format!(
+                        "course node {} references unknown evidence chunk {}",
+                        node.id, chunk_id
+                    )));
+                }
             }
         }
     }
@@ -272,17 +332,27 @@ pub fn validate_lesson_citations(
             "lesson diagnostic question is empty".into(),
         ));
     }
-    if lesson.citations.is_empty() {
-        return Err(AppError::AiResponseInvalid(
-            "lesson has no citations".into(),
-        ));
-    }
-    for citation in &lesson.citations {
-        if !known_chunk_ids.contains(&citation.chunk_id) {
-            return Err(AppError::AiResponseInvalid(format!(
-                "lesson cites unknown chunk {}",
-                citation.chunk_id
-            )));
+    if known_chunk_ids.is_empty() {
+        // Topic-only lessons are grounded in the model's general knowledge.
+        // They must not fabricate local citations.
+        if !lesson.citations.is_empty() {
+            return Err(AppError::AiResponseInvalid(
+                "lesson cites evidence chunks but no local evidence was provided".into(),
+            ));
+        }
+    } else {
+        if lesson.citations.is_empty() {
+            return Err(AppError::AiResponseInvalid(
+                "lesson has no citations".into(),
+            ));
+        }
+        for citation in &lesson.citations {
+            if !known_chunk_ids.contains(&citation.chunk_id) {
+                return Err(AppError::AiResponseInvalid(format!(
+                    "lesson cites unknown chunk {}",
+                    citation.chunk_id
+                )));
+            }
         }
     }
     Ok(())
@@ -490,8 +560,33 @@ mod tests {
     }
 
     #[test]
+    fn accepts_topic_only_plan_without_evidence() {
+        let plan = CoursePlan {
+            title: "Course".into(),
+            description: "Description".into(),
+            learning_objectives: vec![],
+            prerequisites: vec![],
+            nodes: vec![node("a", vec![], vec![]), node("b", vec!["a"], vec![])],
+        };
+        validate_course_plan(&plan, &HashSet::new()).expect("topic-only plan");
+    }
+
+    #[test]
     fn parses_fenced_json() {
         let value: serde_json::Value = parse_json("```json\n{\"ok\":true}\n```").expect("json");
         assert_eq!(value["ok"], true);
+    }
+
+    #[test]
+    fn recovers_json_from_prose_and_reasoning_preambles() {
+        let value: serde_json::Value =
+            parse_json("好的，这是结果：{\"message\": \"你好\", \"ok\": {\"n\": 1}} 请参考")
+                .expect("prose-wrapped json");
+        assert_eq!(value["message"], "你好");
+        let fenced: serde_json::Value =
+            parse_json("```json\n{\"message\": \"带\\\"引号\\\"的文本\"}\n```").expect("fenced");
+        assert_eq!(fenced["message"], "带\"引号\"的文本");
+        let value: serde_json::Value = parse_json("{\"message\": \"解释：{不是JSON}\"}").expect("braces in strings");
+        assert_eq!(value["message"], "解释：{不是JSON}");
     }
 }

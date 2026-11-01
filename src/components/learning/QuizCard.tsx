@@ -169,7 +169,7 @@ export function QuizCard({
                   disabled={reviewing}
                   data-motion="menu"
                 >
-                  {reviewing ? "正在评阅这段作答…" : "让 Orbit 评阅这段作答"}
+                  {reviewing ? "正在评阅这段作答…" : "让 学涯 评阅这段作答"}
                 </button>
               )
             ) : null}

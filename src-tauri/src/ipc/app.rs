@@ -1,16 +1,16 @@
 use super::dto::AppInfoDto;
 use crate::error::AppError;
+use crate::ipc::State;
 use crate::services::{course_service::CourseService, settings_service, source_service};
 use crate::state::AppState;
-use tauri::State;
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn app_bootstrap(state: State<'_, AppState>) -> Result<AppInfoDto, AppError> {
     settings_service::initialize(&state).await?;
     app_info(&state).await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn app_get_info(state: State<'_, AppState>) -> Result<AppInfoDto, AppError> {
     app_info(&state).await
 }

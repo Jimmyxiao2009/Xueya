@@ -1,0 +1,10 @@
+# Replace orbit.example.com and deploy behind:
+#   caddy run --config Caddyfile
+# Caddy obtains and renews HTTPS certificates automatically.
+orbit.example.com {
+    encode zstd gzip
+
+    # Orbit web service. Keep ORBIT_HTTP_BIND=127.0.0.1 in deploy/.env
+    # when using this reverse proxy so the app is not exposed directly.
+    reverse_proxy 127.0.0.1:1420
+}

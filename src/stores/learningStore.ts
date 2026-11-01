@@ -44,6 +44,12 @@ interface LearningState {
   messages: ChatMessage[];
   draft: QuizDraft;
   complete: boolean;
+  /** Node mastery reported by the backend; never rendered as a percentage. */
+  mastery: number;
+  /** Mastery at lesson start, used to scale concept progress without exposing scores. */
+  initialMastery: number;
+  /** Conversation has produced enough reliable evidence to finish this node. */
+  readyToComplete: boolean;
   planExpanded: boolean;
   planPulse: number;
   lastAdaptation: AdaptationEvent | null;
@@ -73,11 +79,17 @@ const emptyDraft: QuizDraft = {
 };
 
 let messageSeq = 0;
+let learningGeneration = 0;
 const nextId = () => `m${++messageSeq}`;
 
 /** Streaming events only exist inside the Tauri WebView; tests use the fake IPC. */
 const streamingAvailable =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+function defaultPlanExpanded(): boolean {
+  return typeof window === "undefined" || window.innerWidth >= 768;
+}
+
 
 /** The assistant message id of the in-flight tutor stream, if any. */
 let activeStreamId: string | null = null;
@@ -123,13 +135,19 @@ export function canAdvance(result: QuizResult | null): boolean {
 
 export function completedSteps(state: {
   lesson: Lesson | null;
-  answered: number;
+  mastery: number;
+  initialMastery: number;
+  readyToComplete: boolean;
   complete: boolean;
 }): number {
   const total = state.lesson?.steps.length ?? 0;
   if (total === 0) return 0;
-  if (state.complete) return total;
-  return Math.min(total - 1, state.answered);
+  if (state.complete || state.readyToComplete) return total;
+  const target = 0.75;
+  const start = Math.min(state.initialMastery, target - 0.05);
+  const span = Math.max(0.05, target - start);
+  const ratio = Math.max(0, Math.min(1, (state.mastery - start) / span));
+  return Math.min(total - 1, Math.floor(ratio * total));
 }
 
 export const useLearningStore = create<LearningState>((set, get) => ({
@@ -143,13 +161,17 @@ export const useLearningStore = create<LearningState>((set, get) => ({
   messages: [],
   draft: emptyDraft,
   complete: false,
-  planExpanded: true,
+    mastery: 0,
+    initialMastery: 0,
+    readyToComplete: false,
+  planExpanded: defaultPlanExpanded(),
   planPulse: 0,
   lastAdaptation: null,
   evaluation: null,
   reviewing: false,
 
   start: async (nodeId) => {
+    const generation = ++learningGeneration;
     stopActiveStream();
     set({
       starting: true,
@@ -161,7 +183,10 @@ export const useLearningStore = create<LearningState>((set, get) => ({
       messages: [],
       draft: emptyDraft,
       complete: false,
-      planExpanded: true,
+        mastery: 0,
+        initialMastery: 0,
+        readyToComplete: false,
+      planExpanded: defaultPlanExpanded(),
       planPulse: 0,
       lastAdaptation: null,
       evaluation: null,
@@ -169,19 +194,64 @@ export const useLearningStore = create<LearningState>((set, get) => ({
     });
     try {
       const started = await api.learningStart({ nodeId });
-      set({
-        starting: false,
-        sessionId: started.sessionId,
-        lesson: started.lesson,
-      });
+      if (generation !== learningGeneration) return false;
+        const resumedMessages: ChatMessage[] = (started.resumed ? started.messages ?? [] : [])
+          .map((message): ChatMessage => ({
+            id: message.id,
+            role: message.role === "user" ? "user" : "assistant",
+            kind: message.role === "user" ? "user" : "text",
+            text: message.content,
+          }));
+        set({
+          starting: false,
+          sessionId: started.sessionId,
+          lesson: started.lesson,
+          mastery: started.mastery,
+          initialMastery: started.resumed ? 0 : started.mastery,
+        });
+        if (started.resumed && resumedMessages.length > 0) {
+          set((current) => ({ ...current, messages: resumedMessages }));
+          return true;
+        }
+        const opening: ChatMessage = started.openingTurn
+          ? {
+              id: nextId(),
+              role: "assistant",
+              kind: "text",
+              text: started.openingTurn.message,
+              note: tutorNote(started.openingTurn),
+              citations: started.openingTurn.citations,
+              grounding: started.openingTurn.grounding,
+            }
+          : (() => {
+              const focus =
+                started.lesson.diagnosticQuestion ||
+                started.lesson.keyPoints[0] ||
+                started.lesson.title;
+              return {
+                id: nextId(),
+                role: "assistant",
+                kind: "text",
+                text: `先不急着记定义。关于「${started.lesson.title}」，我想先请你判断：${focus}\n\n你会怎么解释？`,
+                note: started.openingError
+                  ? `AI 开场未生成：${started.openingError}`
+                  : started.resumed
+                    ? "继续学习"
+                    : "离线开场 · 未接入模型",
+                grounding: "model_knowledge",
+              };
+            })();
+        set((current) => ({ ...current, messages: [opening] }));
       return true;
     } catch (error) {
+      if (generation !== learningGeneration) return false;
       set({ starting: false, error: errorOf(error).message });
       return false;
     }
   },
 
   reset: () => {
+    learningGeneration += 1;
     stopActiveStream();
     set({
       sessionId: null,
@@ -194,7 +264,10 @@ export const useLearningStore = create<LearningState>((set, get) => ({
       messages: [],
       draft: emptyDraft,
       complete: false,
-      planExpanded: true,
+      mastery: 0,
+      initialMastery: 0,
+      readyToComplete: false,
+      planExpanded: defaultPlanExpanded(),
       planPulse: 0,
       lastAdaptation: null,
       evaluation: null,
@@ -234,6 +307,7 @@ export const useLearningStore = create<LearningState>((set, get) => ({
     ),
 
   submit: async () => {
+    const generation = learningGeneration;
     const state = get();
     const question = currentQuestion(state);
     const sessionId = state.sessionId;
@@ -253,11 +327,13 @@ export const useLearningStore = create<LearningState>((set, get) => ({
         answer: answers,
         sessionId,
       });
+      if (generation !== learningGeneration) return;
       set((current) => ({
         draft: { ...current.draft, result, submitting: false },
         lastAdaptation: result.adaptation ?? current.lastAdaptation,
       }));
     } catch (error) {
+      if (generation !== learningGeneration) return;
       set((current) => ({
         draft: { ...current.draft, submitting: false },
         error: errorOf(error).message,
@@ -273,7 +349,11 @@ export const useLearningStore = create<LearningState>((set, get) => ({
     if (!lesson) return;
 
     const answered = state.answered + 1;
-    const complete = answered >= lesson.questions.length;
+    const quizMastery = state.draft.result.mastery;
+    const mastery = Number.isFinite(quizMastery)
+      ? Math.max(state.mastery, quizMastery)
+      : state.mastery;
+    const readyToComplete = state.readyToComplete || mastery >= 0.8;
     const summary: ChatMessage = {
       id: nextId(),
       role: "assistant",
@@ -285,7 +365,7 @@ export const useLearningStore = create<LearningState>((set, get) => ({
     };
     const messages = [...state.messages, summary];
 
-    if (!complete) {
+    if (answered < lesson.questions.length && !readyToComplete) {
       const nextKind = lesson.questions[answered]?.kind ?? "single";
       const prompt =
         PROMPTS[nextKind] ??
@@ -295,7 +375,8 @@ export const useLearningStore = create<LearningState>((set, get) => ({
 
     set({
       answered,
-      complete,
+      mastery,
+      readyToComplete,
       messages,
       draft: emptyDraft,
       evaluation: null,
@@ -305,6 +386,7 @@ export const useLearningStore = create<LearningState>((set, get) => ({
   },
 
   send: async (text) => {
+    const generation = learningGeneration;
     const trimmed = text.trim();
     const sessionId = get().sessionId;
     if (!trimmed || !sessionId) return;
@@ -318,6 +400,7 @@ export const useLearningStore = create<LearningState>((set, get) => ({
       if (streamingAvailable) {
         const assistantId = nextId();
         activeStreamId = assistantId;
+        if (generation !== learningGeneration) return;
         set((state) => ({
           messages: [
             ...state.messages,
@@ -336,7 +419,7 @@ export const useLearningStore = create<LearningState>((set, get) => ({
           if (!buffer) return;
           const chunk = buffer;
           buffer = "";
-          if (activeStreamId !== assistantId) return;
+          if (generation !== learningGeneration || activeStreamId !== assistantId) return;
           set((state) => ({
             messages: state.messages.map((message) =>
               message.id === assistantId ? { ...message, text: message.text + chunk } : message,
@@ -378,12 +461,13 @@ export const useLearningStore = create<LearningState>((set, get) => ({
             { sessionId, message: trimmed, requestId: assistantId },
             (event) => {
               if (event.type !== "delta") return;
-              if (activeStreamId !== assistantId) return;
+              if (generation !== learningGeneration || activeStreamId !== assistantId) return;
               buffer += event.text;
               scheduleFlush();
             },
           );
         } catch (error) {
+          if (generation !== learningGeneration) return;
           streamError = error;
         } finally {
           stopFlush();
@@ -392,6 +476,7 @@ export const useLearningStore = create<LearningState>((set, get) => ({
         }
         if (streamError) throw streamError;
         if (!turn) return;
+        if (generation !== learningGeneration) return;
         set((state) => ({
           messages: state.messages.map((message) =>
             message.id === assistantId
@@ -405,9 +490,12 @@ export const useLearningStore = create<LearningState>((set, get) => ({
               : message,
           ),
           lastAdaptation: turn.adaptation ?? state.lastAdaptation,
+          mastery: turn.mastery ?? state.mastery,
+          readyToComplete: turn.readyToComplete ?? state.readyToComplete,
         }));
       } else {
         const turn = await api.tutorSend({ sessionId, message: trimmed });
+        if (generation !== learningGeneration) return;
         set((state) => ({
           messages: [
             ...state.messages,
@@ -424,9 +512,12 @@ export const useLearningStore = create<LearningState>((set, get) => ({
             },
           ],
           lastAdaptation: turn.adaptation ?? state.lastAdaptation,
+          mastery: turn.mastery ?? state.mastery,
+          readyToComplete: turn.readyToComplete ?? state.readyToComplete,
         }));
       }
     } catch (error) {
+      if (generation !== learningGeneration) return;
       set((state) => ({
         messages: [
           ...state.messages,
@@ -446,6 +537,7 @@ export const useLearningStore = create<LearningState>((set, get) => ({
    * graded in Rust; this is the door for the ones string matching cannot judge.
    */
   review: async () => {
+    const generation = learningGeneration;
     const state = get();
     const sessionId = state.sessionId;
     const answer = state.draft.text.trim();
@@ -453,9 +545,12 @@ export const useLearningStore = create<LearningState>((set, get) => ({
     set({ reviewing: true });
     try {
       const evaluation = await api.learningRespond({ sessionId, answer });
+      if (generation !== learningGeneration) return;
       set((current) => ({
         reviewing: false,
         evaluation,
+          mastery: Math.max(current.mastery, evaluation.mastery),
+          readyToComplete: current.readyToComplete || evaluation.mastery >= 0.8,
         messages: [
           ...current.messages,
           {
@@ -468,6 +563,7 @@ export const useLearningStore = create<LearningState>((set, get) => ({
         ],
       }));
     } catch (error) {
+      if (generation !== learningGeneration) return;
       set((current) => ({
         reviewing: false,
         messages: [
@@ -484,8 +580,8 @@ export const useLearningStore = create<LearningState>((set, get) => ({
   },
 
   finish: async () => {
-    const { sessionId, nodeId } = get();
-    if (!sessionId || !nodeId) return;
+    const { sessionId, nodeId, readyToComplete } = get();
+    if (!sessionId || !nodeId || !readyToComplete) return;
     try {
       await api.learningFinish({ sessionId });
     } catch {

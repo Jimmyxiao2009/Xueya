@@ -257,7 +257,7 @@ pub async fn source_index_needs_reindex(
     source_id: Uuid,
 ) -> Result<bool, AppError> {
     let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM source_index_state WHERE source_id = ? AND status = 'needs_reindex'",
+        "SELECT (SELECT COUNT(*) FROM source_index_state WHERE source_id = ?1 AND status != 'ready') + (SELECT COUNT(*) FROM sources WHERE id = ?1 AND status != 'ready')",
     )
     .bind(source_id)
     .fetch_one(pool)

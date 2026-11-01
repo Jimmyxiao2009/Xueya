@@ -46,6 +46,7 @@ impl<'a> IngestionService<'a> {
         input: IngestInput,
         handle: Option<&JobHandle>,
     ) -> Result<Source, AppError> {
+        let _guard = self.state.ingestion_lock.lock().await;
         if input.bytes.is_empty() {
             return Err(AppError::InvalidInput("cannot import an empty file".into()));
         }
@@ -66,6 +67,16 @@ impl<'a> IngestionService<'a> {
         if let Some(existing) =
             source_repo::find_source_by_hash(&self.state.pool, &content_hash).await?
         {
+            if existing.status != SourceStatus::Ready
+                || crate::knowledge::embedding_cache::source_index_needs_reindex(
+                    &self.state.pool,
+                    existing.id,
+                )
+                .await?
+            {
+                self.reindex_source_unlocked(existing.id, handle).await?;
+                return source_repo::get_source(&self.state.pool, existing.id).await;
+            }
             return Ok(existing);
         }
 
@@ -93,14 +104,15 @@ impl<'a> IngestionService<'a> {
             title: title.clone(),
             uri: input.uri.clone(),
             original_filename: Some(input.filename.clone()),
-            content_hash: None,
+            content_hash: Some(content_hash.clone()),
             status: SourceStatus::Importing,
             created_at: now,
             updated_at: now,
         };
-        source_repo::insert_source(&self.state.pool, &source).await?;
+        let mut tx = self.state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        source_repo::insert_source_tx(&mut tx, &source).await?;
 
-        let revision_no = source_repo::next_revision_number(&self.state.pool, source_id).await?;
+        let revision_no = 1;
         let revision = SourceRevision {
             id: Uuid::new_v4(),
             source_id,
@@ -114,7 +126,7 @@ impl<'a> IngestionService<'a> {
             size_bytes: input.bytes.len() as i64,
             created_at: now,
         };
-        source_repo::insert_revision(&self.state.pool, &revision).await?;
+        source_repo::insert_revision_tx(&mut tx, &revision).await?;
 
         let document = Document {
             id: Uuid::new_v4(),
@@ -126,20 +138,27 @@ impl<'a> IngestionService<'a> {
             metadata_json: normalized.metadata_json.clone(),
             created_at: now,
         };
-        source_repo::insert_document(&self.state.pool, &document).await?;
+        source_repo::insert_document_tx(&mut tx, &document).await?;
 
-        if let Some(handle) = handle {
-            handle.progress(0.35, "Chunking document").await?;
-        }
         let chunks = HeadingAwareChunker::default().chunk(document.id, &normalized)?;
-        chunk_repo::insert_chunks(&self.state.pool, &chunks).await?;
+        chunk_repo::insert_chunks_tx(&mut tx, &chunks).await?;
+        tx.commit().await?;
         self.index_knowledge_for_document(&source, &document, &chunks)
             .await?;
         if let Some(handle) = handle {
             handle.progress(0.55, "Embedding chunks").await?;
         }
         let chunk_ids: Vec<Uuid> = chunks.iter().map(|chunk| chunk.id).collect();
-        self.embed_chunks(&chunk_ids, handle).await?;
+        if let Err(error) = self.embed_chunks(&chunk_ids, handle).await {
+            source_repo::update_source_status(
+                &self.state.pool,
+                source_id,
+                SourceStatus::Failed,
+                Some(&content_hash),
+            )
+            .await?;
+            return Err(error);
+        }
         source_repo::update_source_status(
             &self.state.pool,
             source_id,
@@ -263,14 +282,33 @@ impl<'a> IngestionService<'a> {
                 .iter()
                 .map(|index| chunks[*index].text.clone())
                 .collect();
-            let embedded = embedding_provider.embed(texts).await?;
-            validate_embeddings(&embedded)?;
+            let embedded = match embedding_provider.embed(texts).await {
+                Ok(embedded) => embedded,
+                Err(error) => {
+                    // Embeddings are an optional accelerator: the chunks are
+                    // already stored and keyword/FTS search still works. Keep
+                    // the source usable instead of failing the whole import.
+                    tracing::warn!(
+                        %error,
+                        "embedding provider unavailable; source stays keyword-searchable"
+                    );
+                    return Ok(());
+                }
+            };
+            if let Err(error) = validate_embeddings(&embedded) {
+                tracing::warn!(
+                    %error,
+                    "embedding provider returned invalid vectors; source stays keyword-searchable"
+                );
+                return Ok(());
+            }
             if embedded.len() != batch.len() {
-                return Err(AppError::Embedding(format!(
-                    "embedding provider returned {} vectors for {} chunks",
-                    embedded.len(),
-                    batch.len()
-                )));
+                tracing::warn!(
+                    returned = embedded.len(),
+                    expected = batch.len(),
+                    "embedding provider returned the wrong vector count; source stays keyword-searchable"
+                );
+                return Ok(());
             }
             for (offset, vector) in embedded.into_iter().enumerate() {
                 let index = batch[offset];
@@ -383,10 +421,83 @@ impl<'a> IngestionService<'a> {
         source_id: Uuid,
         handle: Option<&JobHandle>,
     ) -> Result<(), AppError> {
-        let documents = source_repo::list_documents_by_source(&self.state.pool, source_id).await?;
+        let _guard = self.state.ingestion_lock.lock().await;
+        self.reindex_source_unlocked(source_id, handle).await
+    }
+
+    async fn reindex_source_unlocked(
+        &self,
+        source_id: Uuid,
+        handle: Option<&JobHandle>,
+    ) -> Result<(), AppError> {
+        let source = source_repo::get_source(&self.state.pool, source_id).await?;
+        source_repo::update_source_status(
+            &self.state.pool,
+            source_id,
+            SourceStatus::Importing,
+            None,
+        )
+        .await?;
+        let result = self.restore_and_index(&source, handle).await;
+        source_repo::update_source_status(
+            &self.state.pool,
+            source_id,
+            if result.is_ok() {
+                SourceStatus::Ready
+            } else {
+                SourceStatus::Failed
+            },
+            None,
+        )
+        .await?;
+        result
+    }
+
+    async fn restore_and_index(
+        &self,
+        source: &Source,
+        handle: Option<&JobHandle>,
+    ) -> Result<(), AppError> {
+        let mut documents =
+            source_repo::list_documents_by_source(&self.state.pool, source.id).await?;
+        if documents.is_empty() {
+            let revision = sqlx::query_as::<_, SourceRevision>("SELECT id, source_id, revision_no, content_hash, blob_path, mime_type, size_bytes, created_at FROM source_revisions WHERE source_id = ? ORDER BY revision_no DESC LIMIT 1")
+                .bind(source.id).fetch_optional(&self.state.pool).await?
+                .ok_or_else(|| AppError::NotFound("source backup revision is missing".into()))?;
+            let bytes = self.state.blobs.get_bytes(&revision.blob_path).await?;
+            if bytes.len() as i64 != revision.size_bytes
+                || sha256_hex(&bytes) != revision.content_hash
+            {
+                return Err(AppError::InvalidInput(
+                    "source backup integrity check failed".into(),
+                ));
+            }
+            let filename = source.original_filename.as_deref().unwrap_or(&source.title);
+            let parser = detect_parser(filename, Some(&revision.mime_type))?;
+            let normalized =
+                normalize_document(parser.parse(filename, Some(&revision.mime_type), &bytes)?);
+            let document = Document {
+                id: Uuid::new_v4(),
+                source_id: source.id,
+                revision_id: revision.id,
+                title: normalized.title.clone(),
+                text_content: normalized.full_text(),
+                page_count: normalized.page_count(),
+                metadata_json: normalized.metadata_json.clone(),
+                created_at: utc_now(),
+            };
+            let chunks = HeadingAwareChunker::default().chunk(document.id, &normalized)?;
+            let mut tx = self.state.pool.begin_with("BEGIN IMMEDIATE").await?;
+            source_repo::insert_document_tx(&mut tx, &document).await?;
+            chunk_repo::insert_chunks_tx(&mut tx, &chunks).await?;
+            tx.commit().await?;
+            documents.push(document);
+        }
         let mut chunk_ids = Vec::new();
         for document in documents {
             let chunks = chunk_repo::list_chunks_by_document(&self.state.pool, document.id).await?;
+            self.index_knowledge_for_document(source, &document, &chunks)
+                .await?;
             chunk_ids.extend(chunks.into_iter().map(|chunk| chunk.id));
         }
         self.embed_chunks(&chunk_ids, handle).await

@@ -1,9 +1,23 @@
 # Orbit Design System
 
-Orbit's visual language is not a theme that was invented for the app — it was
-designed first, in `reference/Orbit_motion_continuous_swipe.html`, and the app
-implements it. **The prototype is the design source of truth.** If a screen here
-disagrees with the prototype, the screen is wrong.
+Orbit's visual language was designed first in
+`reference/Orbit_motion_continuous_swipe.html`, and the app preserves it.
+
+## Reference Prototype
+
+The prototype remains the **Visual Source of Truth**, **Motion Source of Truth**,
+**Tactile Interaction Source of Truth**, and **Roadmap Geometry Source of Truth**:
+warm paper, typography, node geometry, lesson transition, swipe physics, button
+feedback and animation language.
+
+## Learning Interaction Source of Truth
+
+The learning interaction is now **Conversation-first Socratic Learning**.
+The prototype's old `question -> answer -> next question -> complete`
+quiz-first state machine is **not** a product-behavior contract.
+
+> Preserve the prototype's visual language.
+> Do not preserve its old quiz-driven learning state machine.
 
 This document is the contract: tokens, class names, motion constants and the
 rules for when to use Tailwind versus the ported design layer.
@@ -23,8 +37,10 @@ Concretely, that rules out:
   single scroll and a single focused action at a time.
 * Turning the roadmap into a list. The winding path, the alternating nodes and
   the ambient float **are** the roadmap.
-* A ChatGPT-style chat. The learning screen is a lesson with a plan, not a
-  message log with a composer at the bottom of an empty page.
+* A generic chat UI: empty chatbot, bubble wall, or requiring the learner to
+  always initiate. 学涯 is a guided conversational lesson: agent output reads
+  like a dynamic textbook, and learner replies can appear as reply, annotation
+  or thought.
 
 ---
 
@@ -34,7 +50,7 @@ Two files hold the same literals, on purpose:
 
 | File | Consumed by |
 | --- | --- |
-| `src/styles/tokens.css` (`:root`) | the ported design layer (`components.css`, `effects.css`, `motion.css`) |
+| `src/styles/tokens.css` (`:root`) | the reference cascade (`components.css`, including effects and motion) |
 | `src/styles/index.css` (`@theme`) | Tailwind utilities |
 
 **When you change a colour, change it in both.** `tokens.css` names it
@@ -320,3 +336,15 @@ Before claiming a change is done, check these by hand:
 8. Resizing the desktop window keeps everything inside a centred 480px column.
 9. With the OS set to reduce motion, every one of the above still works, just
    instantly.
+
+### 2026-09-20 reference replacement
+
+The user-supplied warm-paper Orbit variant and the existing Lighthouse / Dark Fog variant coexist. Theme = Visual Motif (Lighthouse / Buoy) × Color Scheme (Light / Dark / System). The original homepage structure and reference CSS order are retained in `components.css`; the existing Lighthouse surface differences are isolated in `lighthouse-theme.css`. OOBE uses the same theme state. Store-backed learning flows remain connected. The preview has two routes for continuous-swipe verification. Instant swipe transitions clear the drag transform before React reuses the live pane.
+
+The complete Lighthouse scene was subsequently located in `B:/学涯-backup-20260919/src`, matching the user's screenshot. Its homepage is restored in `LighthouseRoadmapScreen.tsx`, with scoped original primitives in `lighthouse-scene.css` and daylight/OOBE adaptation in `lighthouse-adapter.css`. It includes the primary tower, tower nodes, endpoint-based path states, fog and water rings. Buoy keeps the original homepage rendering. The rewritten OOBE reuses the recovered atmosphere and beacon without restoring the backup's old onboarding flow.
+
+### Independent backgrounds and icons
+
+Appearance now has three independent preferences: `visualMotif` selects the existing scene background (Lighthouse sea / Buoy paper), `iconMotif` selects the original tower or rounded Buoy node, and `colorScheme` selects light / dark / system. The four background × icon combinations each support both schemes. `RoadmapNodeIcon` keeps learning state and click targets shared. The primary tower belongs to the Lighthouse background scene; changing node icons does not remove that scene anchor. OOBE uses the same preferences without changing its flow. Older preferences without `iconMotif` inherit their saved `visualMotif`, preserving their previous appearance.
+
+User-visible product naming is 学涯, including headers, learning assistant, onboarding, cloud service (学涯云), browser titles and native application labels. Existing application IDs, storage keys, IPC headers and database identity remain stable for compatibility.

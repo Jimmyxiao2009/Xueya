@@ -297,10 +297,24 @@ export interface Lesson {
   hasEvidence: boolean;
 }
 
+export interface ConversationMessage {
+  id: string;
+  role: string;
+  content: string;
+  metadataJson: string;
+  createdAt: string;
+}
+
+
 export interface LearningStart {
   sessionId: string;
   lesson: Lesson;
   mastery: number;
+  /** Agent-authored first turn. Missing when the opening could not be generated. */
+  openingTurn?: TutorTurn | null;
+  openingError?: string | null;
+  resumed?: boolean;
+  messages?: ConversationMessage[];
 }
 
 export interface QuizResult {
@@ -366,6 +380,9 @@ export interface TutorTurn {
   routeUpdated: boolean;
   insertedNodeId?: string | null;
   adaptation?: AdaptationEvent | null;
+  masteryDelta?: number;
+  mastery?: number;
+  readyToComplete?: boolean;
 }
 
 /** Event shape emitted by the Rust `tutor_stream` event. */
@@ -377,6 +394,9 @@ export type AiStreamEvent =
   | { type: "failed"; code: string; message: string };
 
 export function errorOf(value: unknown): AppErrorShape {
+  if (value instanceof TypeError && value.message.includes("invoke") && !("__TAURI_INTERNALS__" in window)) {
+    return { code: "DESKTOP_REQUIRED", message: "当前为浏览器页面，请在桌面应用中使用本地资料与学习功能。", retryable: false };
+  }
   if (typeof value === "object" && value !== null && "code" in value && "message" in value) {
     return value as AppErrorShape;
   }
@@ -386,9 +406,31 @@ export function errorOf(value: unknown): AppErrorShape {
   return { code: "INTERNAL_ERROR", message: "Unexpected error", retryable: false };
 }
 
+let dataGeneration = 0;
 export async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (["cloud_login", "cloud_register", "cloud_logout", "cloud_set_base_url"].includes(command)) dataGeneration++;
+  const generation = dataGeneration;
+  const current = (value: T): T => {
+    if (generation !== dataGeneration) throw { code: "STALE_SESSION", message: "账号已切换，请重新读取。", retryable: false };
+    return value;
+  };
   try {
-    return await invoke<T>(command, args);
+    if (import.meta.env.MODE !== "test" && !("__TAURI_INTERNALS__" in window)) {
+      const response = await fetch("/api/invoke", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-Orbit-Client": "web" },
+        body: JSON.stringify({ command, args }),
+        signal: AbortSignal.timeout(190_000),
+      });
+      if (!response.headers.get("content-type")?.includes("application/json")) {
+        throw { code: "SERVICE_UNAVAILABLE", message: "学习服务尚未连接，请检查服务器是否启动。", retryable: true };
+      }
+      const payload = await response.json();
+      if (!response.ok) throw payload;
+      return current(payload as T);
+    }
+    return current(await invoke<T>(command, args));
   } catch (error) {
     throw errorOf(error);
   }
@@ -397,6 +439,9 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
 export interface SettingsShape {
   searchProvider: string;
   hasBraveApiKey: boolean;
+  hasTavilyApiKey: boolean;
+  hasSerperApiKey: boolean;
+  searxngUrl: string;
   aiMode: string;
 }
 
@@ -413,7 +458,14 @@ export const api = {
   info: () => call<AppInfo>("app_get_info"),
   competitionDemoSeed: () => call<string>("competition_demo_seed"),
   settingsGet: () => call<SettingsShape>("settings_get"),
-  settingsUpdate: (input: { searchProvider?: string; braveApiKey?: string; aiMode?: string }) =>
+  settingsUpdate: (input: {
+    searchProvider?: string;
+    braveApiKey?: string;
+    tavilyApiKey?: string;
+    serperApiKey?: string;
+    searxngUrl?: string;
+    aiMode?: string;
+  }) =>
     call<SettingsShape>("settings_update", { input }),
   cloudAccountState: () => call<CloudAccountState>("cloud_account_state"),
   cloudRegister: (input: { email: string; password: string }) =>
@@ -461,7 +513,7 @@ export const api = {
     call<Job>("source_import_url", { input }),
   sourceDelete: (id: string) => call<void>("source_delete", { id }),
   sourceReindex: (id: string) => call<Job>("source_reindex", { id }),
-  searchWeb: (input: { query: string; count?: number }) =>
+  searchWeb: (input: { query: string; count?: number; ai?: boolean }) =>
     call<Array<{ title: string; url: string; snippet: string; source: string }>>("search_web", {
       input,
     }),
@@ -542,8 +594,17 @@ export const api = {
 const TERMINAL = ["completed", "failed", "cancelled"];
 
 export async function watchJob(id: string, onUpdate: (job: Job) => void): Promise<Job> {
+  let failures = 0;
   for (;;) {
-    const job = await api.jobGet(id);
+    let job: Job;
+    try {
+      job = await api.jobGet(id);
+      failures = 0;
+    } catch (error) {
+      if (++failures >= 5) throw error;
+      await new Promise((resolve) => window.setTimeout(resolve, Math.min(4000, 500 * 2 ** (failures - 1))));
+      continue;
+    }
     onUpdate(job);
     if (TERMINAL.includes(job.status)) {
       return job;

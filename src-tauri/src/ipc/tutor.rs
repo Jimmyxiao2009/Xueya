@@ -4,13 +4,15 @@ use super::dto::{
 };
 use crate::ai::stream::AiStreamEvent;
 use crate::error::AppError;
+use crate::ipc::{AppHandle, State};
 use crate::services::tutor_service::{TutorService, TutorTurn};
 use crate::state::AppState;
 use serde_json::json;
-use tauri::{AppHandle, Emitter, State};
+#[cfg(feature = "desktop")]
+use tauri::Emitter;
 use tokio::sync::mpsc;
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn tutor_send(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -34,7 +36,7 @@ pub async fn tutor_send(
 /// `{ requestId, event }`; the command returns the authoritative final turn.
 /// The frontend can buffer deltas with requestAnimationFrame and still apply
 /// the same citation/adaptation metadata as the non-streaming path.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn tutor_send_stream(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -69,7 +71,7 @@ pub async fn tutor_send_stream(
     Ok(tutor_turn_dto(turn))
 }
 
-fn tutor_turn_dto(turn: TutorTurn) -> TutorTurnDto {
+pub(crate) fn tutor_turn_dto(turn: TutorTurn) -> TutorTurnDto {
     let citations = turn.citations.iter().map(TutorCitationDto::from).collect();
     let diagnosis_detail = turn.diagnosis_detail.as_ref().map(DiagnosisDto::from);
     TutorTurnDto {
@@ -83,5 +85,8 @@ fn tutor_turn_dto(turn: TutorTurn) -> TutorTurnDto {
         route_updated: turn.adaptation.is_some(),
         inserted_node_id: turn.inserted_node_id,
         adaptation: turn.adaptation.as_ref().map(AdaptationEventDto::from),
+        mastery_delta: turn.mastery_delta,
+        mastery: turn.mastery,
+        ready_to_complete: turn.ready_to_complete,
     }
 }

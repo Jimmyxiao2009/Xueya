@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
@@ -22,7 +23,7 @@ impl EncryptedSecretStore {
     pub fn new(app_data_dir: impl Into<PathBuf>) -> Result<Self, AppError> {
         let app_data_dir = app_data_dir.into();
         let secure_dir = app_data_dir.join("secure");
-        let _ = std::fs::create_dir_all(&secure_dir);
+        std::fs::create_dir_all(&secure_dir)?;
 
         let key_path = secure_dir.join("vault.key");
         let vault_path = secure_dir.join("vault.enc");
@@ -30,41 +31,54 @@ impl EncryptedSecretStore {
         let rng = SystemRandom::new();
         let mut key_bytes = [0u8; 32];
 
-        if key_path.exists() {
-            let data = std::fs::read(&key_path)
-                .map_err(|e| AppError::Internal(format!("failed to read vault key: {e}")))?;
-            if data.len() == 32 {
+        match std::fs::read(&key_path) {
+            Ok(data) => {
+                if data.len() != 32 {
+                    return Err(AppError::Internal("vault key has invalid length".into()));
+                }
                 key_bytes.copy_from_slice(&data);
-            } else {
-                rng.fill(&mut key_bytes)
-                    .map_err(|_| AppError::Internal("failed to generate random vault key".into()))?;
-                let _ = std::fs::write(&key_path, &key_bytes);
             }
-        } else {
-            rng.fill(&mut key_bytes)
-                .map_err(|_| AppError::Internal("failed to generate random vault key".into()))?;
-            let _ = std::fs::write(&key_path, &key_bytes);
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if vault_path.try_exists()? {
+                    return Err(AppError::Internal("existing vault key is missing".into()));
+                }
+                rng.fill(&mut key_bytes).map_err(|_| {
+                    AppError::Internal("failed to generate random vault key".into())
+                })?;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&key_path)?;
+                file.write_all(&key_bytes)?;
+                file.sync_all()?;
+            }
+            Err(error) => return Err(error.into()),
         }
 
-        let mut initial_cache = HashMap::new();
-        if vault_path.exists() {
-            if let Ok(data) = std::fs::read(&vault_path) {
-                if data.len() > NONCE_LEN {
-                    let (nonce_slice, ciphertext) = data.split_at(NONCE_LEN);
-                    if let Ok(unbound) = UnboundKey::new(&AES_256_GCM, &key_bytes) {
-                        let safe_key = LessSafeKey::new(unbound);
-                        if let Ok(nonce) = Nonce::try_assume_unique_for_key(nonce_slice) {
-                            let mut in_out = ciphertext.to_vec();
-                            if let Ok(decrypted) = safe_key.open_in_place(nonce, Aad::empty(), &mut in_out) {
-                                if let Ok(parsed) = serde_json::from_slice::<HashMap<String, String>>(decrypted) {
-                                    initial_cache = parsed;
-                                }
-                            }
-                        }
-                    }
+        let initial_cache = match std::fs::read(&vault_path) {
+            Ok(data) => {
+                if data.len() < NONCE_LEN + AES_256_GCM.tag_len() {
+                    return Err(AppError::Internal("vault is truncated".into()));
                 }
+                let (nonce_slice, ciphertext) = data.split_at(NONCE_LEN);
+                let unbound = UnboundKey::new(&AES_256_GCM, &key_bytes)
+                    .map_err(|_| AppError::Internal("invalid vault key".into()))?;
+                let nonce = Nonce::try_assume_unique_for_key(nonce_slice)
+                    .map_err(|_| AppError::Internal("invalid vault nonce".into()))?;
+                let mut in_out = ciphertext.to_vec();
+                let decrypted = LessSafeKey::new(unbound)
+                    .open_in_place(nonce, Aad::empty(), &mut in_out)
+                    .map_err(|_| {
+                        AppError::Internal(
+                            "vault authentication failed; original file preserved".into(),
+                        )
+                    })?;
+                serde_json::from_slice::<HashMap<String, String>>(decrypted)
+                    .map_err(|_| AppError::Internal("vault contents are invalid".into()))?
             }
-        }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+            Err(error) => return Err(error.into()),
+        };
 
         Ok(Self {
             vault_path,
@@ -74,14 +88,13 @@ impl EncryptedSecretStore {
         })
     }
 
-    fn persist(&self) -> Result<(), AppError> {
-        let cache = self.cache.read()
-            .map_err(|_| AppError::Internal("cache lock poisoned".into()))?;
-        let json_bytes = serde_json::to_vec(&*cache)
+    fn persist(&self, cache: &HashMap<String, String>) -> Result<(), AppError> {
+        let json_bytes = serde_json::to_vec(cache)
             .map_err(|e| AppError::Internal(format!("failed to serialize vault: {e}")))?;
 
         let mut nonce_bytes = [0u8; NONCE_LEN];
-        self.rng.fill(&mut nonce_bytes)
+        self.rng
+            .fill(&mut nonce_bytes)
             .map_err(|_| AppError::Internal("failed to generate nonce".into()))?;
 
         let unbound = UnboundKey::new(&AES_256_GCM, &self.key_bytes)
@@ -91,7 +104,8 @@ impl EncryptedSecretStore {
             .map_err(|_| AppError::Internal("invalid nonce".into()))?;
 
         let mut in_out = json_bytes;
-        safe_key.seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
+        safe_key
+            .seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
             .map_err(|_| AppError::Internal("failed to encrypt vault".into()))?;
 
         let mut output = Vec::with_capacity(NONCE_LEN + in_out.len());
@@ -99,8 +113,10 @@ impl EncryptedSecretStore {
         output.extend_from_slice(&in_out);
 
         let temp_path = self.vault_path.with_extension("tmp");
-        std::fs::write(&temp_path, output)
-            .map_err(|e| AppError::Internal(format!("failed to write vault temp: {e}")))?;
+        let mut file = std::fs::File::create(&temp_path)?;
+        file.write_all(&output)?;
+        file.sync_all()?;
+        drop(file);
         std::fs::rename(temp_path, &self.vault_path)
             .map_err(|e| AppError::Internal(format!("failed to save vault: {e}")))?;
 
@@ -114,33 +130,44 @@ impl SecretStore for EncryptedSecretStore {
         if value.trim().is_empty() {
             return Err(AppError::InvalidInput("secret cannot be empty".into()));
         }
-        {
-            let mut cache = self.cache.write()
-                .map_err(|_| AppError::Internal("cache lock poisoned".into()))?;
-            cache.insert(key.to_owned(), value.to_owned());
-        }
-        self.persist()
+        let mut cache = self
+            .cache
+            .write()
+            .map_err(|_| AppError::Internal("cache lock poisoned".into()))?;
+        let mut candidate = cache.clone();
+        candidate.insert(key.to_owned(), value.to_owned());
+        self.persist(&candidate)?;
+        *cache = candidate;
+        Ok(())
     }
 
     async fn get_secret(&self, key: &str) -> Result<String, AppError> {
-        let cache = self.cache.read()
+        let cache = self
+            .cache
+            .read()
             .map_err(|_| AppError::Internal("cache lock poisoned".into()))?;
-        cache.get(key)
+        cache
+            .get(key)
             .cloned()
             .ok_or_else(|| AppError::NotFound("secret reference does not exist".into()))
     }
 
     async fn delete_secret(&self, key: &str) -> Result<(), AppError> {
-        {
-            let mut cache = self.cache.write()
-                .map_err(|_| AppError::Internal("cache lock poisoned".into()))?;
-            cache.remove(key);
-        }
-        self.persist()
+        let mut cache = self
+            .cache
+            .write()
+            .map_err(|_| AppError::Internal("cache lock poisoned".into()))?;
+        let mut candidate = cache.clone();
+        candidate.remove(key);
+        self.persist(&candidate)?;
+        *cache = candidate;
+        Ok(())
     }
 
     async fn secret_exists(&self, key: &str) -> Result<bool, AppError> {
-        let cache = self.cache.read()
+        let cache = self
+            .cache
+            .read()
             .map_err(|_| AppError::Internal("cache lock poisoned".into()))?;
         Ok(cache.contains_key(key))
     }
@@ -156,14 +183,23 @@ mod tests {
         let store = EncryptedSecretStore::new(tmp.path()).unwrap();
 
         assert!(!store.secret_exists("openai_key").await.unwrap());
-        store.set_secret("openai_key", "sk-test-12345").await.unwrap();
+        store
+            .set_secret("openai_key", "sk-test-12345")
+            .await
+            .unwrap();
         assert!(store.secret_exists("openai_key").await.unwrap());
-        assert_eq!(store.get_secret("openai_key").await.unwrap(), "sk-test-12345");
+        assert_eq!(
+            store.get_secret("openai_key").await.unwrap(),
+            "sk-test-12345"
+        );
 
         // Verify reopening from disk retains the secret
         let reopened = EncryptedSecretStore::new(tmp.path()).unwrap();
         assert!(reopened.secret_exists("openai_key").await.unwrap());
-        assert_eq!(reopened.get_secret("openai_key").await.unwrap(), "sk-test-12345");
+        assert_eq!(
+            reopened.get_secret("openai_key").await.unwrap(),
+            "sk-test-12345"
+        );
 
         // Verify deletion
         reopened.delete_secret("openai_key").await.unwrap();
